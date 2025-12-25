@@ -3,7 +3,8 @@ import random
 import uuid
 from datetime import datetime
 from sqlalchemy import select, func
-from database import AsyncSessionLocal, Order, PlatformEnum, OrderStatusEnum
+from database import async_session_maker as AsyncSessionLocal
+from models import Order, PlatformEnum, OrderStatusEnum
 
 async def fetch_orders_mock():
     """

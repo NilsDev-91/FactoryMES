@@ -6,15 +6,16 @@ from typing import AsyncGenerator
 import os
 
 # PostgreSQL Connection String
-# Use environment variables for flexibility
 POSTGRES_USER = os.getenv("POSTGRES_USER", "factory_user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "factory_password")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "factory_db")
-# Default to localhost, assume Docker ports mapped
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1") 
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 
-DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+DEFAULT_DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+# Use DATABASE_URL env var if available, otherwise default to constructed string
+DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 # Create Async Engine
 engine = create_async_engine(

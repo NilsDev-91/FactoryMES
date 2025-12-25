@@ -30,19 +30,27 @@ class BambuPrinterClient:
             ciphers=None
         )
 
+        # Exponential Backoff variables
+        retry_delay = 1
+        max_delay = 30
+        
+        self.last_message_time = 0.0
+
         while not self._stop_event.is_set():
             try:
-                logger.info(f"Connecting to MQTT brokwer at {self.ip}...")
+                logger.info(f"Connecting to MQTT broker at {self.ip}...")
                 async with aiomqtt.Client(
                     hostname=self.ip,
                     port=8883,
                     username="bblp",
                     password=self.access_code,
                     tls_params=tls_params,
-                    identifier=f"factoryos-{self.serial}"
+                    identifier=f"factoryos-{self.serial}",
+                    keepalive=10 # standard mqtt keepalive
                 ) as client:
                     self._mqtt_client = client
                     self.connected = True
+                    retry_delay = 1 # Reset backoff on success
                     logger.info("MQTT Connected!")
 
                     # Subscribe to report topic
@@ -58,19 +66,24 @@ class BambuPrinterClient:
                         }
                     }
                     await client.publish(f"device/{self.serial}/request", json.dumps(push_cmd))
-                    logger.info("Sent push_status command")
-
+                    
+                    # Watchdog Loop
+                    # We run the message loop, but if it exits or errors, we catch it.
                     async for message in client.messages:
+                         self.last_message_time = asyncio.get_running_loop().time()
                          await self._on_message(message)
 
             except aiomqtt.MqttError as e:
                 self.connected = False
-                logger.error(f"MQTT Connection error: {e}. Reconnecting in 5s...")
-                await asyncio.sleep(5)
+                logger.error(f"MQTT Connection error: {e}. Reconnecting in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
+                
             except Exception as e:
                 self.connected = False
-                logger.error(f"Unexpected error: {e}. Reconnecting in 5s...")
-                await asyncio.sleep(5)
+                logger.error(f"Unexpected error: {e}. Reconnecting in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
 
     async def _on_message(self, message: aiomqtt.Message):
         """Handles incoming MQTT messages."""

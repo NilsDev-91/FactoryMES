@@ -69,3 +69,13 @@ class Job(SQLModel, table=True):
 
     order: Optional[Order] = Relationship(back_populates="jobs")
     assigned_printer: Optional[Printer] = Relationship(back_populates="jobs")
+
+class Product(SQLModel, table=True):
+    __tablename__ = "products"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    sku: str = Field(unique=True, index=True)
+    description: Optional[str] = None
+    file_path_3mf: str
+    created_at: datetime = Field(default_factory=datetime.now)
