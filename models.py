@@ -1,6 +1,7 @@
 
 from typing import Optional, List
 from datetime import datetime
+from sqlalchemy import JSON, Column
 from sqlmodel import SQLModel, Field, Relationship
 from enum import Enum
 
@@ -55,6 +56,10 @@ class Printer(SQLModel, table=True):
     current_temp_nozzle: float = Field(default=0.0)
     current_temp_bed: float = Field(default=0.0)
     
+    # Stores AMS state as JSON
+    # Example: [{"slot": 0, "type": "PLA", "color": "#FF0000", "remaining": 100}, ...]
+    ams_data: List[dict] = Field(default=[], sa_column=Column(JSON))
+    
     jobs: List["Job"] = Relationship(back_populates="assigned_printer")
 
 class Job(SQLModel, table=True):
@@ -78,4 +83,9 @@ class Product(SQLModel, table=True):
     sku: str = Field(unique=True, index=True)
     description: Optional[str] = None
     file_path_3mf: str
+    
+    # Material Requirements
+    required_filament_type: str = Field(default="PLA") # e.g. PLA, PETG, ABS
+    required_filament_color: Optional[str] = Field(default=None) # Hex Code or Name, e.g. "#FF0000"
+
     created_at: datetime = Field(default_factory=datetime.now)

@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 from sqlmodel import select, col
 from database import async_session_maker
-from models import Printer, Job, JobStatusEnum, PrinterStatusEnum, Order, OrderStatusEnum
+from models import Printer, Job, JobStatusEnum, PrinterStatusEnum, Order, OrderStatusEnum, Product
 from bambu_client import BambuPrinterClient
 
 # Configure Logging
@@ -84,7 +84,6 @@ async def sync_loop():
                 
                 # --- STEP 2: Job Matching ---
                 # Find IDLE printers
-                # We can query DB for IDLE printers (since we just updated them)
                 result = await session.execute(
                     select(Printer).where(Printer.current_status == PrinterStatusEnum.IDLE)
                 )
@@ -96,8 +95,6 @@ async def sync_loop():
                         select(Job)
                         .where(Job.status == JobStatusEnum.PENDING)
                         .order_by(Job.created_at.asc())
-                        .limit(len(idle_printers))     # Optimize: fetch only as many as we can handle?
-                                                       # Actually best to fetch one by one or batch match
                     )
                     pending_jobs = result.scalars().all()
                     
@@ -105,23 +102,49 @@ async def sync_loop():
                         if not idle_printers:
                             break
                         
-                        # Take the first available printer
-                        printer = idle_printers.pop(0)
+                        # Get Order to find SKU -> Product Requirements
+                        order = await session.get(Order, job.order_id)
+                        if not order:
+                            logger.error(f"Job {job.id} has invalid order {job.order_id}")
+                            continue
+
+                        # Find Product by SKU
+                        result = await session.execute(select(Product).where(Product.sku == order.sku))
+                        product = result.scalars().first()
                         
-                        # Assign
-                        logger.info(f"Assigning Job {job.id} (Order {job.order_id}) to Printer {printer.serial} ({printer.name})")
+                        # Find a compatible printer among idle ones
+                        compatible_printer = None
                         
-                        job.assigned_printer_serial = printer.serial
-                        job.status = JobStatusEnum.PRINTING
+                        # If no product found, we can't check requirements. 
+                        # DECISION: Fail safe? Or unsafe? Let's assume unsafe and require product.
+                        if not product:
+                             logger.warning(f"Order {order.id} SKU {order.sku} not found in Products table. Cannot verify materials.")
+                             # Skip or fail? Skipping for now.
+                             continue
+
+                        for p in idle_printers:
+                            if check_material_match(p, product):
+                                compatible_printer = p
+                                break
                         
-                        printer.current_status = PrinterStatusEnum.PRINTING
-                        
-                        session.add(job)
-                        session.add(printer)
-                        
-                        # TODO: Here we would send the actual GCode command via BambuClient
-                        # For now, just Log
-                        logger.info(f"COMMAND: Start Printing {job.gcode_path} on {printer.serial}")
+                        if compatible_printer:
+                            # Assign
+                            logger.info(f"Assigning Job {job.id} (Order {job.order_id}) to Printer {compatible_printer.serial} ({compatible_printer.name})")
+                            
+                            job.assigned_printer_serial = compatible_printer.serial
+                            job.status = JobStatusEnum.PRINTING
+                            
+                            compatible_printer.current_status = PrinterStatusEnum.PRINTING
+                            
+                            session.add(job)
+                            session.add(compatible_printer)
+                            
+                            # Remove from available pool for this loop
+                            idle_printers.remove(compatible_printer)
+                            
+                            logger.info(f"COMMAND: Start Printing {job.gcode_path} on {compatible_printer.serial}")
+                        else:
+                            logger.debug(f"No compatible printer found for Job {job.id} (Req: {product.required_filament_type} {product.required_filament_color})")
 
                     if pending_jobs:
                         await session.commit()
@@ -130,6 +153,54 @@ async def sync_loop():
             logger.error(f"Error in sync_loop: {e}", exc_info=True)
         
         await asyncio.sleep(5)
+
+def check_material_match(printer: Printer, product: Product) -> bool:
+    """
+    Checks if the printer has the required filament loaded in AMS.
+    Robust Logic: Strict Type match, Empty Check, Color Logic.
+    """
+    req_type = product.required_filament_type
+    req_color = product.required_filament_color
+
+    if not req_type:
+        return True # No requirements
+
+    if not printer.ams_data:
+        # No AMS data means we can't verify. Safe fallback is False.
+        return False
+
+    ams_slots = printer.ams_data # SQLModel/Postgres handles JSON decoding
+
+    for slot in ams_slots:
+        # Check standard format
+        if not isinstance(slot, dict):
+            continue
+            
+        slot_type = slot.get('type', 'UNKNOWN')
+        slot_color = slot.get('color', None)
+        remaining = slot.get('remaining', 0)
+
+        # 1. Empty Spool Check
+        if remaining <= 0:
+            continue
+
+        # 2. Type Check (Strict, Case Insensitive)
+        # We use strict equality to avoid "Support for PLA" matching "PLA"
+        if req_type.lower() != slot_type.lower():
+            continue
+        
+        # 3. Color Check 
+        if req_color:
+            if not slot_color:
+                continue
+            # Simple exact match (case insensitive)
+            if req_color.lower() != slot_color.lower():
+                continue
+
+        # If we passed all checks, it's a match
+        return True
+
+    return False
 
 async def main():
     logger.info("Initializing Worker Service...")

@@ -13,6 +13,7 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 
 DEFAULT_DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+# DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///factory.db"
 
 # Use DATABASE_URL env var if available, otherwise default to constructed string
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
