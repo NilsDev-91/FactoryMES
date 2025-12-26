@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 // import useSWR from 'swr';
 import { fetchOrders, fetchPrinters } from './api';
-import { LayoutDashboard, RefreshCw, Printer, Package } from 'lucide-react';
+import { LayoutDashboard, RefreshCw, Printer, Package, ShoppingCart } from 'lucide-react';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar'; // Ensure this is exported named or adjust
 import DashboardView from './components/views/DashboardView';
 import FleetView from './components/views/FleetView';
 import ProductView from './components/views/ProductView';
+import OrdersView from './components/views/OrdersView';
 
 function App() {
   const [currentView, setCurrentView] = useState('Dashboard');
@@ -44,7 +45,7 @@ function App() {
 
   useEffect(() => {
     refreshOrders();
-    const interval = setInterval(refreshOrders, 10000);
+    const interval = setInterval(refreshOrders, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -69,8 +70,9 @@ function App() {
             <h2 className="text-2xl font-bold text-white flex gap-2 items-center tracking-tight">
               {currentView === 'Dashboard' && <><LayoutDashboard className="text-blue-500" /> Dashboard</>}
               {currentView === 'Fleet' && <><Printer className="text-blue-500" /> Fleet Management</>}
+              {currentView === 'Orders' && <><ShoppingCart className="text-blue-500" /> Live Order Feed</>}
               {currentView === 'Products' && <><Package className="text-purple-500" /> Products</>}
-              {!['Dashboard', 'Fleet', 'Products'].includes(currentView) && <span className="text-slate-500">Module Under Construction: {currentView}</span>}
+              {!['Dashboard', 'Fleet', 'Products', 'Orders'].includes(currentView) && <span className="text-slate-500">Module Under Construction: {currentView}</span>}
             </h2>
 
             <div className="text-xs text-slate-400 flex gap-2 items-center bg-slate-800/50 px-3 py-1 rounded-full border border-slate-700">
@@ -95,8 +97,12 @@ function App() {
               <ProductView />
             )}
 
+            {currentView === 'Orders' && (
+              <OrdersView orders={orders} />
+            )}
+
             {/* Placeholder for other views */}
-            {!['Dashboard', 'Fleet', 'Products'].includes(currentView) && (
+            {!['Dashboard', 'Fleet', 'Products', 'Orders'].includes(currentView) && (
               <div className="flex items-center justify-center h-64 border-2 border-dashed border-slate-800 rounded-xl">
                 <p className="text-slate-500">The {currentView} module is coming soon.</p>
               </div>

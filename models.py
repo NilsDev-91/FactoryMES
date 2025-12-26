@@ -11,6 +11,8 @@ class PlatformEnum(str, Enum):
 
 class OrderStatusEnum(str, Enum):
     OPEN = "OPEN"
+    QUEUED = "QUEUED"
+    PRINTING = "PRINTING"
     IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
 
@@ -55,6 +57,9 @@ class Printer(SQLModel, table=True):
     current_status: PrinterStatusEnum = Field(default=PrinterStatusEnum.IDLE)
     current_temp_nozzle: float = Field(default=0.0)
     current_temp_bed: float = Field(default=0.0)
+    
+    current_progress: int = Field(default=0) # Percentage 0-100
+    remaining_time: int = Field(default=0) # Minutes
     
     # Stores AMS state as JSON
     # Example: [{"slot": 0, "type": "PLA", "color": "#FF0000", "remaining": 100}, ...]

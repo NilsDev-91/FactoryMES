@@ -1,6 +1,6 @@
 import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Activity, CheckCircle, AlertTriangle, Zap, TrendingUp } from 'lucide-react';
+import { Activity, CheckCircle, AlertTriangle, Zap, TrendingUp, ShoppingBag, Clock } from 'lucide-react';
 
 const DashboardView = ({ printers = [], orders = [] }) => {
 
@@ -10,6 +10,7 @@ const DashboardView = ({ printers = [], orders = [] }) => {
     const errors = printers.filter(p => ['OFFLINE', 'error', 'pause'].includes((p.current_status || '').toLowerCase())).length;
     const fleetSize = printers.length || 1; // avoid div by zero
     const efficiency = Math.round(((fleetSize - errors) / fleetSize) * 100);
+    const pendingOrders = orders.filter(o => ['OPEN', 'IN_PROGRESS'].includes(o.status)).length;
 
     // Mock Data for Charts
     const data = [
@@ -48,7 +49,7 @@ const DashboardView = ({ printers = [], orders = [] }) => {
                 <KPICard title="Active Jobs" value={activeJobs} icon={Activity} color="text-blue-400" bg="bg-blue-500/10 border-blue-500/20" />
                 <KPICard title="Fleet Efficiency" value={`${efficiency}%`} icon={Zap} color="text-green-400" bg="bg-green-500/10 border-green-500/20" />
                 <KPICard title="Issues" value={errors} icon={AlertTriangle} color="text-amber-400" bg="bg-amber-500/10 border-amber-500/20" />
-                <KPICard title="Completed Today" value="24" icon={CheckCircle} color="text-purple-400" bg="bg-purple-500/10 border-purple-500/20" />
+                <KPICard title="Pending Orders" value={pendingOrders} icon={ShoppingBag} color="text-purple-400" bg="bg-purple-500/10 border-purple-500/20" />
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -88,12 +89,12 @@ const DashboardView = ({ printers = [], orders = [] }) => {
                     <div className="space-y-4">
                         {alerts.map((alert, idx) => (
                             <div key={idx} className={`p-4 rounded-lg border flex items-start gap-4 ${alert.type === 'error' ? 'bg-red-500/10 border-red-500/20' :
-                                    alert.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20' :
-                                        'bg-blue-500/10 border-blue-500/20'
+                                alert.type === 'warning' ? 'bg-amber-500/10 border-amber-500/20' :
+                                    'bg-blue-500/10 border-blue-500/20'
                                 }`}>
                                 <div className={`mt-1 ${alert.type === 'error' ? 'text-red-400' :
-                                        alert.type === 'warning' ? 'text-amber-400' :
-                                            'text-blue-400'
+                                    alert.type === 'warning' ? 'text-amber-400' :
+                                        'text-blue-400'
                                     }`}>
                                     <AlertTriangle size={16} />
                                 </div>
@@ -105,6 +106,8 @@ const DashboardView = ({ printers = [], orders = [] }) => {
                         ))}
                     </div>
                 </div>
+
+
 
             </div>
         </div>

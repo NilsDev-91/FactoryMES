@@ -21,7 +21,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 # Create Async Engine
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True, # Set to False in production
+    echo=False, # Set to False in production
     future=True
 )
 

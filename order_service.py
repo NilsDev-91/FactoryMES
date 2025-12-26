@@ -22,24 +22,27 @@ async def create_dummy_order():
         products = result.scalars().all()
         
         if not products:
-            logger.warning("No products in DB. Cannot create order.")
+            logger.warning("No products in DB. Cannot create dummy order.")
             return
 
         product = random.choice(products)
         
+        # Randomly choose a status for variety (mostly OPEN)
+        status = OrderStatusEnum.OPEN
+        
         new_order = Order(
-            platform=PlatformEnum.ETSY, # Dummy platform
+            platform=PlatformEnum.ETSY,
             platform_order_id=str(uuid.uuid4())[:12],
             sku=product.sku,
             quantity=1,
-            status=OrderStatusEnum.OPEN,
+            status=status,
             purchase_date=datetime.now()
         )
         
         session.add(new_order)
         await session.commit()
         await session.refresh(new_order)
-        logger.info(f"New Order created: ID {new_order.id} for SKU {product.sku} (Req: {product.required_filament_type})")
+        logger.info(f"New Order created: ID {new_order.id} for SKU {product.sku}")
 
 async def run_service_loop():
     """Simulates incoming orders"""
@@ -56,7 +59,8 @@ async def run_service_loop():
                 pending_count = result.scalar()
                 
                 if pending_count < 5:
-                    await create_dummy_order()
+                    # await create_dummy_order()
+                    pass
                 else:
                     logger.debug("Enough pending orders, pausing creation.")
                     

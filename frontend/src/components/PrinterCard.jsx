@@ -52,6 +52,14 @@ const PrinterCard = ({ printer }) => {
 
     const styles = getStatusStyles();
 
+    // Helper to format remaining minutes
+    const formatTime = (minutes) => {
+        if (!minutes) return '--:--';
+        const h = Math.floor(minutes / 60);
+        const m = minutes % 60;
+        return `${h}h ${m}m`;
+    };
+
     return (
         <div
             className={cn(
@@ -85,7 +93,7 @@ const PrinterCard = ({ printer }) => {
                     // Show mock print progress or image
                     <div className="flex flex-col items-center justify-center text-slate-500">
                         <Package className="animate-pulse text-green-500/50 mb-2" size={32} />
-                        <span className="text-xs">Printing Layer {printer.layer || 45}/{printer.totalLayers || 240}</span>
+                        <span className="text-xs">Printing Layer {printer.layer || '?'}/{printer.totalLayers || '?'}</span>
                     </div>
                 ) : (
                     <div className="text-slate-600">
@@ -97,13 +105,13 @@ const PrinterCard = ({ printer }) => {
             {/* Progress Section */}
             <div className="mb-4">
                 <div className="flex justify-between text-xs text-slate-400 mb-1.5">
-                    <span className="flex items-center gap-1"><Clock size={12} /> {printer.time_left || '--:--'}</span>
-                    <span className="font-medium text-slate-200">{printer.progress || 0}%</span>
+                    <span className="flex items-center gap-1"><Clock size={12} /> {formatTime(printer.remaining_time)}</span>
+                    <span className="font-medium text-slate-200">{printer.current_progress || 0}%</span>
                 </div>
                 <div className="h-2 w-full bg-slate-700/50 rounded-full overflow-hidden">
                     <div
                         className={cn("h-full rounded-full transition-all duration-1000", styles.progress)}
-                        style={{ width: `${printer.progress || 0}%` }}
+                        style={{ width: `${printer.current_progress || 0}%` }}
                     />
                 </div>
             </div>
@@ -115,16 +123,22 @@ const PrinterCard = ({ printer }) => {
                 <TelemetryItem icon={Wind} label="Fan" value={`${printer.fan_speed || 0}%`} />
             </div>
 
-            {/* AMS Slots (Mock for now as backend doesn't send ams) */}
+            {/* AMS Slots (Real Data) */}
             <div className="flex gap-2 justify-center">
-                {(printer.ams_colors || ['#ef4444', '#3b82f6', '#eab308', '#22c55e']).map((color, i) => (
-                    <div
-                        key={i}
-                        className="w-4 h-4 rounded-full border border-slate-600 shadow-sm"
-                        style={{ backgroundColor: color || '#334155' }}
-                        title={`Slot ${i + 1}`}
-                    />
-                ))}
+                {printer.ams_data && printer.ams_data.length > 0 ? (
+                    printer.ams_data.map((slot, i) => (
+                        <div
+                            key={slot.slot || i}
+                            className="w-4 h-4 rounded-full border border-slate-600 shadow-sm relative group cursor-pointer"
+                            style={{ backgroundColor: slot.color || '#334155' }}
+                            title={`Slot ${i + 1}: ${slot.type} (${slot.remaining || 0}%)`}
+                        >
+                            {/* Optional: Check for empty slot explicitly if needed */}
+                        </div>
+                    ))
+                ) : (
+                    <span className="text-[10px] text-slate-500">No AMS Data</span>
+                )}
             </div>
         </div>
     );
@@ -156,8 +170,8 @@ const arePropsEqual = (prevProps, nextProps) => {
         // Round to integer to avoid re-render on micro-fluctuations (e.g. 210.1 -> 210.2)
         Math.round(prev.current_temp_nozzle) === Math.round(next.current_temp_nozzle) &&
         Math.round(prev.current_temp_bed) === Math.round(next.current_temp_bed) &&
-        prev.progress === next.progress &&
-        prev.time_left === next.time_left
+        prev.current_progress === next.current_progress &&
+        prev.remaining_time === next.remaining_time
     );
 };
 

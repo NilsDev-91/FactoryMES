@@ -45,18 +45,18 @@ async def seed_printers():
         printers_to_add.append(real_p)
 
         # 2. Add 49 Dummy Printers
-        logger.info("Generating 49 Dummy Printers...")
-        for i in range(1, 50):
-            dummy_serial = f"DUMMY-{i:03d}"
-            dummy_p = Printer(
-                serial=dummy_serial,
-                name=f"Farm Printer #{i}",
-                ip_address=f"10.0.0.{100+i}",
-                access_code="12345678",
-                type=random.choice(list(PrinterTypeEnum)),
-                current_status=PrinterStatusEnum.OFFLINE
-            )
-            printers_to_add.append(dummy_p)
+        # logger.info("Generating 49 Dummy Printers...")
+        # for i in range(1, 50):
+        #     dummy_serial = f"DUMMY-{i:03d}"
+        #     dummy_p = Printer(
+        #         serial=dummy_serial,
+        #         name=f"Farm Printer #{i}",
+        #         ip_address=f"10.0.0.{100+i}",
+        #         access_code="12345678",
+        #         type=random.choice(list(PrinterTypeEnum)),
+        #         current_status=PrinterStatusEnum.OFFLINE
+        #     )
+        #     printers_to_add.append(dummy_p)
 
         # Bulk Insert
         session.add_all(printers_to_add)
