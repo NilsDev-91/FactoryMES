@@ -59,7 +59,7 @@ export const uploadProductFile = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE_URL}/products/upload`, {
+    const response = await fetch(`${API_BASE_URL}/api/products/upload`, {
         method: 'POST',
         body: formData, // No Content-Type header needed
     });
@@ -69,9 +69,19 @@ export const uploadProductFile = async (file) => {
 };
 
 export const deleteProduct = async (id) => {
-    const response = await fetch(`${API_BASE_URL}/products/${id}`, {
+    const response = await fetch(`${API_BASE_URL}/api/products/${id}`, {
         method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete product');
+    return response.json();
+};
+
+export const updateProduct = async (id, data) => {
+    const response = await fetch(`${API_BASE_URL}/api/products/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error('Failed to update product');
     return response.json();
 };

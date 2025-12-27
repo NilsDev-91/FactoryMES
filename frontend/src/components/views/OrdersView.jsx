@@ -67,19 +67,28 @@ const OrdersView = ({ orders = [] }) => {
                                                 </div>
                                             </td>
                                             <td className="py-4 px-4">
-                                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${order.status === 'DONE' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                                                    order.status === 'OPEN' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                                                        order.status === 'QUEUED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
-                                                            order.status === 'PRINTING' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' :
-                                                                order.status === 'IN_PROGRESS' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                                                                    'bg-slate-700/50 text-slate-400 border-slate-600/50'
-                                                    }`}>
-                                                    {order.status === 'OPEN' && <CheckCircle size={12} />}
-                                                    {order.status === 'QUEUED' && <Clock size={12} />}
-                                                    {order.status === 'PRINTING' && <Package size={12} className="animate-pulse" />}
-                                                    {order.status === 'IN_PROGRESS' && <Clock size={12} />}
-                                                    {order.status === 'DONE' ? 'COMPLETED' : order.status}
-                                                </span>
+                                                <div className="flex flex-col gap-1.5 items-start">
+                                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${order.status === 'DONE' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                                                        order.status === 'OPEN' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                                                            order.status === 'QUEUED' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                                                                order.status === 'PRINTING' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' :
+                                                                    order.status === 'FAILED' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                                                                        order.status === 'IN_PROGRESS' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                                                                            'bg-slate-700/50 text-slate-400 border-slate-600/50'
+                                                        }`}>
+                                                        {order.status === 'OPEN' && <CheckCircle size={12} />}
+                                                        {order.status === 'QUEUED' && <Clock size={12} />}
+                                                        {order.status === 'PRINTING' && <Package size={12} className="animate-pulse" />}
+                                                        {order.status === 'FAILED' && <AlertCircle size={12} />}
+                                                        {order.status === 'IN_PROGRESS' && <Clock size={12} />}
+                                                        {order.status === 'DONE' ? 'COMPLETED' : order.status}
+                                                    </span>
+                                                    {order.status === 'FAILED' && order.error_message && (
+                                                        <span className="text-[10px] text-red-400 max-w-[200px] leading-tight opacity-80">
+                                                            {order.error_message}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className="py-4 px-4 text-right text-slate-400 font-mono">
                                                 {order.purchase_date ? new Date(order.purchase_date).toLocaleString() : '-'}

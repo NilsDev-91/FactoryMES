@@ -40,4 +40,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutdown...")
+        logger.info("Shutdown (KeyboardInterrupt)...")
+    except Exception as e:
+        logger.critical(f"Daemon Crashed: {e}", exc_info=True)

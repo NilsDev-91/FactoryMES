@@ -1,64 +1,64 @@
 
 import asyncio
 import sys
-import uuid
+import time
 from datetime import datetime
-from sqlmodel import select
+from sqlmodel import text, select
 from database import async_session_maker
-from models import Order, OrderStatusEnum, PlatformEnum
+from models import Order, OrderStatusEnum, PlatformEnum, Job
 
-async def create_order(sku: str, quantity: int = 1):
+async def run_simulation():
+    print("--- STARTING PRODUCTION SIMULATION (CLEAN START) ---")
+    
     async with async_session_maker() as session:
-        new_order = Order(
-            platform=PlatformEnum.ETSY,
-            platform_order_id=str(uuid.uuid4())[:12],
-            sku=sku,
-            quantity=quantity,
-            status=OrderStatusEnum.OPEN,
-            purchase_date=datetime.now()
-        )
-        session.add(new_order)
+        # 1. PURGE (Clean Slate)
+        print("1. PURGING existing Orders and Jobs...")
+        # Note: Delete jobs first due to FK constraint
+        await session.execute(text("DELETE FROM jobs"))
+        await session.execute(text("DELETE FROM orders"))
         await session.commit()
-        await session.refresh(new_order)
-        print(f"[{datetime.now().time()}] Created Order {new_order.id} for {sku}")
-        return new_order.id
-
-async def wait_for_printing(order_id: int):
-    print(f"Waiting for Order {order_id} to start printing...")
-    while True:
-        async with async_session_maker() as session:
-            order = await session.get(Order, order_id)
-            if order and order.status == OrderStatusEnum.PRINTING:
-                print(f"[{datetime.now().time()}] Order {order_id} is now PRINTING!")
-                return
-            
-            # Also check if it went to DONE (skipped?)
-            if order and order.status == OrderStatusEnum.DONE:
-                 print(f"[{datetime.now().time()}] Order {order_id} went straight to DONE.")
-                 return
-
-        await asyncio.sleep(2)
-
-async def run_scenario():
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        print("   -> Database Cleared.")
         
-    print("--- STARTING PRODUCTION SIMULATION ---")
-    
-    # 1. Push white_eye
-    order_id = await create_order("white_eye")
-    
-    # 2. Wait for it to start printing
-    await wait_for_printing(order_id)
-    
-    # 3. Wait 1 min
-    print("Waiting 60 seconds before next order...")
-    await asyncio.sleep(60)
-    
-    # 4. Push red_tooth
-    await create_order("red_tooth")
-    
-    print("--- SIMULATION COMPLETE ---")
+        # 2. Create White Eye Order
+        print(f"\n[{datetime.now().time()}] 2. Creating Order 1: 'white_eye'")
+        order1 = Order(
+            platform=PlatformEnum.EBAY,
+            platform_order_id=f"SIM-{int(time.time())}-1",
+            sku="white_eye",
+            quantity=1,
+            purchase_date=datetime.now(),
+            status=OrderStatusEnum.OPEN
+        )
+        session.add(order1)
+        await session.commit()
+        await session.refresh(order1)
+        print(f"   -> 'white_eye' Order Created (ID: {order1.id})")
+
+        # 3. Wait 5 Seconds
+        print("\n3. Waiting 5 seconds...")
+        await asyncio.sleep(5)
+        
+        # 4. Create Red Tooth Order
+        print(f"\n[{datetime.now().time()}] 4. Creating Order 2: 'red_tooth'")
+        order2 = Order(
+            platform=PlatformEnum.EBAY,
+            platform_order_id=f"SIM-{int(time.time())}-2",
+            sku="red_tooth",
+            quantity=1,
+            purchase_date=datetime.now(),
+            status=OrderStatusEnum.OPEN
+        )
+        session.add(order2)
+        await session.commit()
+        await session.refresh(order2)
+        print(f"   -> 'red_tooth' Order Created (ID: {order2.id})")
+        
+        print("\n--- SIMULATION ORDERS PLACED ---")
+        print("Now Check if:")
+        print("1. White Eye -> FAILED (if upload fails as expected)")
+        print("2. Red Tooth -> PRINTING (after delay)")
 
 if __name__ == "__main__":
-    asyncio.run(run_scenario())
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.run(run_simulation())

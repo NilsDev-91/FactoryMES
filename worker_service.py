@@ -3,6 +3,7 @@ import asyncio
 import logging
 import sys
 import os
+import zipfile
 from datetime import datetime
 from typing import Dict, Any
 
@@ -18,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("WorkerService")
 logger.setLevel(logging.INFO)
-logging.getLogger("BambuClient").setLevel(logging.WARNING) # Silence telemetry spam
+logging.getLogger("BambuClient").setLevel(logging.INFO) # Enable telemetry for debugging
 
 
 # Global State Cache
@@ -31,49 +32,80 @@ PRINTER_CLIENTS: Dict[str, BambuPrinterClient] = {}
 
 async def execute_print_job(client: BambuPrinterClient, job_id: int, local_path: str, ams_mapping: list = None):
     """
-    Orchestrates the print start:
-    1. Uploads file to Printer SD Card via FTPS.
-    2. Sends MQTT command to start print with AMS mapping.
+    Uploads file and starts print. 
+    Handles errors by updating Job status to FAILED and freeing the Printer.
     """
+    logger.info(f"JOB {job_id}: Executing Print Job on {client.serial}...")
+    
     try:
         filename = os.path.basename(local_path)
-        target_path = f"/{filename}" 
-        
+        target_path = f"/{filename}"
+
         logger.info(f"JOB {job_id}: Starting Upload of {local_path} to {target_path}...")
         
-        # Upload (Blocking but runs in executor inside client)
-        error_msg = None
+        # Upload
+        await client.upload_file(local_path, target_path)
+        logger.info(f"JOB {job_id}: Upload Complete.")
+
+        # Determine internal G-code path
+        internal_gcode_path = "Metadata/plate_1.gcode"
         try:
-            if not os.path.exists(local_path):
-                raise FileNotFoundError(f"File not found: {local_path}")
-                
-            await client.upload_file(local_path, target_path)
-            logger.info(f"JOB {job_id}: Upload Complete.")
-        except Exception as e:
-            logger.error(f"JOB {job_id}: Upload Failed: {e}")
-            error_msg = str(e)
+            with zipfile.ZipFile(local_path, 'r') as z:
+                for name in z.namelist():
+                    if name.startswith("Metadata/") and name.endswith(".gcode") and not name.endswith(".md5"):
+                        internal_gcode_path = name
+                        logger.info(f"JOB {job_id}: Found internal G-code path: {name}")
+                        break
+        except Exception as zip_err:
+             logger.warning(f"JOB {job_id}: Failed to inspect 3MF zip structure: {zip_err}. Using default: {internal_gcode_path}")
 
-        if error_msg:
-             # Update Job to ERROR
-            async with async_session_maker() as session:
-                j = await session.get(Job, job_id)
-                if j:
-                    j.status = JobStatusEnum.ERROR
-                    # j.error_message = error_msg  # If we had this field
-                    session.add(j)
-                    await session.commit()
-            return # Stop execution
-
-        
         # Start Print
-        logger.info(f"JOB {job_id}: Sending Print Command with Mapping {ams_mapping}...")
-        await client.send_gcode_path(target_path, ams_mapping=ams_mapping) # Pass mapping
-        logger.info(f"JOB {job_id}: Command Sent.")
-        
+        logger.info(f"JOB {job_id}: Sending Print Command with Mapping {ams_mapping} using param {internal_gcode_path}...")
+        await client.start_print(target_path, ams_mapping=ams_mapping, gcode_internal_path=internal_gcode_path)
+        logger.info(f"JOB {job_id}: Print Command Sent!")
+
+        # Update Job Status to PRINTING (Exit UPLOADING state)
+        async with async_session_maker() as session:
+             job = await session.get(Job, job_id)
+             if job:
+                 job.status = JobStatusEnum.PRINTING
+                 session.add(job)
+                 await session.commit()
+                 logger.info(f"JOB {job_id}: Status updated to PRINTING")
+
     except Exception as e:
-        logger.error(f"JOB {job_id}: Failed to execute print: {e}")
-        # TODO: Mark job as ERROR in DB?
-        # For now, just log. It remains PRINTING in DB, which is safe-ish (won't reassign).
+        logger.error(f"JOB {job_id}: FAILED - {e}")
+        
+        # Update DB State on Failure
+        try:
+            async with async_session_maker() as session:
+                # Get Job
+                job = await session.get(Job, job_id)
+                if job:
+                    job.status = JobStatusEnum.FAILED
+                    job.error_message = str(e)
+                    session.add(job)
+                    
+                    # Also Update Order to FAILED
+                    order = await session.get(Order, job.order_id)
+                    if order:
+                        order.status = OrderStatusEnum.FAILED
+                        order.error_message = str(e)
+                        session.add(order)
+                    
+                    # Release Printer
+                    if job.assigned_printer_serial:
+                        printer = await session.get(Printer, job.assigned_printer_serial)
+                        if printer:
+                            printer.current_status = PrinterStatusEnum.IDLE
+                            session.add(printer)
+                            
+                            logger.info(f"JOB {job_id}: Printer {printer.serial} released to IDLE due to failure.")
+                
+                await session.commit()
+        except Exception as db_e:
+            logger.error(f"JOB {job_id}: CRITICAL - Failed to update DB after job failure: {db_e}")
+        
 
 def handle_mqtt_update(serial: str, data: Dict[str, Any]):
     """
@@ -94,6 +126,7 @@ async def sync_loop():
     """
     logger.info("Starting Sync Loop...")
     while True:
+        # logger.debug("Sync Loop Tick...")
         try:
             async with async_session_maker() as session:
                 # --- STEP 1: Sync Cache to DB ---
@@ -114,14 +147,64 @@ async def sync_loop():
                                 # Let's assume the raw string is close enough or use a mapper.
                                 # Simple mapping:
                                 raw_status = data["print_status"]
-                                if raw_status in ["IDLE", "FINISH"]:
-                                    printer.current_status = PrinterStatusEnum.IDLE
-                                elif raw_status == "RUNNING":
-                                    printer.current_status = PrinterStatusEnum.PRINTING
-                                else:
-                                    # Keep as is or map to IDLE/PRINTING based on context
-                                    pass 
-                                data_changed = True
+                                old_status = printer.current_status
+                                new_status = printer.current_status # default
+
+                                # Check for active job to protect UPLOADING state
+                                active_job_q = await session.execute(
+                                    select(Job).where(
+                                        Job.assigned_printer_serial == printer.serial,
+                                        col(Job.status).in_([JobStatusEnum.PRINTING, JobStatusEnum.UPLOADING])
+                                    )
+                                )
+                                active_job_for_update = active_job_q.scalars().first()
+
+                                if raw_status in ["IDLE", "FINISH", "FAILED"]:
+                                    # Grace period: If job is UPLOADING, ignore IDLE
+                                    if active_job_for_update and active_job_for_update.status == JobStatusEnum.UPLOADING:
+                                        new_status = PrinterStatusEnum.PRINTING
+                                    else:
+                                        new_status = PrinterStatusEnum.IDLE
+                                elif raw_status in ["RUNNING", "PAUSE", "PREPARE"]:
+                                    new_status = PrinterStatusEnum.PRINTING
+                                
+                                # Check for Completion Transition (PRINTING -> IDLE)
+                                if old_status == PrinterStatusEnum.PRINTING and new_status == PrinterStatusEnum.IDLE:
+                                    logger.info(f"Printer {printer.serial} stopped printing (Status: {raw_status}). Checking for active job...")
+                                    active_job_result = await session.execute(
+                                        select(Job).where(
+                                            Job.assigned_printer_serial == printer.serial,
+                                            Job.status == JobStatusEnum.PRINTING
+                                        )
+                                    )
+                                    active_job = active_job_result.scalars().first()
+                                    
+                                    if active_job:
+                                        if raw_status == "FAILED":
+                                             logger.error(f"Job {active_job.id} FAILED on printer. Updating status.")
+                                             active_job.status = JobStatusEnum.FAILED
+                                             active_job.error_message = "Printer reported FAILED state"
+                                             session.add(active_job)
+                                             
+                                             order = await session.get(Order, active_job.order_id)
+                                             if order:
+                                                 order.status = OrderStatusEnum.FAILED
+                                                 order.error_message = "Printer reported FAILED state"
+                                                 session.add(order)
+                                        else:
+                                            logger.info(f"Job {active_job.id} COMPLETED. Updating status.")
+                                            active_job.status = JobStatusEnum.FINISHED
+                                            session.add(active_job)
+                                            
+                                            # Update Order to DONE
+                                            order = await session.get(Order, active_job.order_id)
+                                            if order:
+                                                order.status = OrderStatusEnum.DONE
+                                                session.add(order)
+                                
+                                if new_status != old_status:
+                                    printer.current_status = new_status
+                                    data_changed = True
 
                             if "nozzle_temper" in data:
                                 printer.current_temp_nozzle = float(data["nozzle_temper"])
@@ -246,7 +329,7 @@ async def sync_loop():
                             logger.info(f"Assigning Job {job.id} (Order {job.order_id}) to Printer {compatible_printer.serial} (Slot {matched_slot_idx})")
                             
                             job.assigned_printer_serial = compatible_printer.serial
-                            job.status = JobStatusEnum.PRINTING
+                            job.status = JobStatusEnum.UPLOADING # Prevent race condition during upload
                             
                             # Update Order Status to PRINTING
                             order.status = OrderStatusEnum.PRINTING

@@ -119,7 +119,11 @@ async def get_products(session: AsyncSession = Depends(get_session)):
 
 @app.post("/products", response_model=Product)
 async def create_product(product: Product, session: AsyncSession = Depends(get_session)):
-    # Check if SKU exists
+    # 1. Validate File Path exists (ensure it wasn't faked)
+    if not os.path.exists(product.file_path_3mf):
+        raise HTTPException(status_code=400, detail=f"3MF File not found at path: {product.file_path_3mf}. Please upload it first.")
+
+    # 2. Check if SKU exists
     existing = await session.execute(select(Product).where(Product.sku == product.sku))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Product with this SKU already exists")
@@ -129,29 +133,36 @@ async def create_product(product: Product, session: AsyncSession = Depends(get_s
     await session.refresh(product)
     return product
 
-@app.post("/products/upload")
+@app.post("/api/products/upload") # Updated route to match user request /api/...
 async def upload_product_file(file: UploadFile = File(...)):
     """
-    Uploads a .3mf file and returns the relative path.
+    Step 1 of Product Creation: Upload the 3MF file.
+    Returns: {"file_path": "storage/3mf/uuid_filename.3mf"}
     """
+    # 1. Ensure Storage Directory
+    if not os.path.exists(STORAGE_DIR):
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+
+    # 2. Validate File Type
     if not file.filename.endswith(".3mf"):
          raise HTTPException(status_code=400, detail="Only .3mf files are allowed")
 
-    # Generate unique filename to prevent overwrites
+    # 3. Generate Unique Filename (Sanitize/UUID)
     ext = os.path.splitext(file.filename)[1]
     unique_filename = f"{uuid.uuid4()}{ext}"
     file_path = os.path.join(STORAGE_DIR, unique_filename)
     
+    # 4. Save File (Stream large files)
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File upload failed: {e}")
 
-    # Return relative path for DB storage
+    # 5. Return Relative Path
     return {"file_path": file_path}
 
-@app.delete("/products/{id}")
+@app.delete("/api/products/{id}")
 async def delete_product(id: int, session: AsyncSession = Depends(get_session)):
     product = await session.get(Product, id)
     if not product:
@@ -169,3 +180,18 @@ async def delete_product(id: int, session: AsyncSession = Depends(get_session)):
     await session.delete(product)
     await session.commit()
     return {"ok": True}
+
+@app.patch("/api/products/{id}", response_model=Product)
+async def update_product(id: int, product_update: dict, session: AsyncSession = Depends(get_session)):
+    product = await session.get(Product, id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    for key, value in product_update.items():
+        if hasattr(product, key):
+            setattr(product, key, value)
+    
+    session.add(product)
+    await session.commit()
+    await session.refresh(product)
+    return product

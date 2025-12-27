@@ -15,6 +15,7 @@ class OrderStatusEnum(str, Enum):
     PRINTING = "PRINTING"
     IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
+    FAILED = "FAILED"
 
 class PrinterTypeEnum(str, Enum):
     P1S = "P1S"
@@ -43,6 +44,7 @@ class Order(SQLModel, table=True):
     quantity: int
     purchase_date: datetime
     status: OrderStatusEnum = Field(default=OrderStatusEnum.OPEN)
+    error_message: Optional[str] = None
     
     jobs: List["Job"] = Relationship(back_populates="order")
 
@@ -75,6 +77,7 @@ class Job(SQLModel, table=True):
     assigned_printer_serial: Optional[str] = Field(default=None, foreign_key="printers.serial")
     gcode_path: str
     status: JobStatusEnum = Field(default=JobStatusEnum.PENDING)
+    error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
     order: Optional[Order] = Relationship(back_populates="jobs")

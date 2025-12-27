@@ -193,11 +193,12 @@ class BambuPrinterClient:
         except Exception as e:
             logger.error(f"Error processing message: {e}")
 
-    async def send_gcode_path(self, path: str, ams_mapping: list = None):
+    async def start_print(self, path: str, ams_mapping: list = None, gcode_internal_path: str = "Metadata/plate_1.gcode"):
         """
         Sends a request to start printing a file from the SD card.
         :param path: Full path on SD (e.g., /filename.3mf)
         :param ams_mapping: List of AMS slot indices corresponding to objects in 3mf (e.g. [2])
+        :param gcode_internal_path: Path to gcode inside 3mf (e.g. Metadata/plate_1.gcode)
         """
         if not self._mqtt_client or not self.connected:
             logger.error("Cannot send gcode: MQTT not connected")
@@ -214,27 +215,7 @@ class BambuPrinterClient:
             "print": {
                 "sequence_id": "0",
                 "command": "project_file",
-                "param": f"file:///sdcard/{cleaned_path}", # Correct param for 3MF seems to be the full file URL or just filename?
-                # Actually, some docs say param: "Metadata/plate_1.gcode" IF it's unzipped.
-                # BUT if it is a single .3mf file, we might need:
-                # 'param': f'file:///sdcard/{cleaned_path}' ?
-                # Let's try matching URL and Param or just filename.
-                # Standard P1P/X1C 3MF print:
-                # command: "project_file"
-                # param: "Metadata/plate_1.gcode" <-- This implies the printer unzips it?
-                # url: "file:///sdcard/filename.3mf"
-                
-                # WAIT. If we upload a .3mf, does the printer unzip it automatically?
-                # Usually YES for X1/P1.
-                # If so, the "param" must point to the GCODE INSIDE the 3mf.
-                # Typically inside a 3MF, the gcode is at "Metadata/plate_1.gcode".
-                
-                # So my previous code was: "param": f"Metadata/{cleaned_path}"
-                # If cleaned_path is "file.3mf", then param became "Metadata/file.3mf". THIS IS WRONG.
-                # It should be "Metadata/plate_1.gcode" (default) or we need to look inside the 3mf to find the gcode name.
-                
-                # Let's assume standard Bambu Studio export which uses "Metadata/plate_1.gcode".
-                "param": "Metadata/plate_1.gcode", 
+                "param": gcode_internal_path, 
                 
                 "url": f"file:///sdcard/{cleaned_path}",
                 "plate_id": 1,
@@ -256,6 +237,7 @@ class BambuPrinterClient:
         
         topic = f"device/{self.serial}/request"
         logger.info(f"Sending print request for {cleaned_path} to {topic} with AMS {ams_mapping}")
+        logger.info(f"Payload: {json.dumps(payload, indent=2)}")
         await self._mqtt_client.publish(topic, json.dumps(payload))
 
     async def upload_file(self, local_path: str, target_path: str, port: int = 990):
