@@ -1,17 +1,17 @@
 
 import numpy as np
-from typing import Optional, List, Dict
+from typing import Optional, List, Tuple
 from sqlmodel import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.core import Printer, PrinterStatusEnum
+from app.models.core import Printer, PrinterStatusEnum, Job
 from app.models.filament import AmsSlot
 
-# --- Color Math Helpers ---
+# --- Color Math Helpers (Numpy Implementation) ---
 
 def _hex_to_rgb(hex_color: str) -> np.ndarray:
     """
     Convert hex string to RGB numpy array (0-1 range).
-    Handles 6 char 'RRGGBB' and 8 char 'RRGGBBAA' (strips Alpha).
     """
     hex_color = hex_color.lstrip('#')
     if len(hex_color) == 8:
@@ -30,7 +30,6 @@ def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     rgb[~mask] = rgb[~mask] / 12.92
     
     # 2. sRGB to XYZ
-    # Matrix for D65
     M = np.array([
         [0.4124564, 0.3575761, 0.1804375],
         [0.2126729, 0.7151522, 0.0721750],
@@ -38,8 +37,7 @@ def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     ])
     XYZ = rgb @ M.T
     
-    # 3. XYZ to Lab
-    # Reference white D65
+    # 3. XYZ to Lab (Reference D65)
     Xn, Yn, Zn = 0.95047, 1.00000, 1.08883
     XYZ = XYZ / np.array([Xn, Yn, Zn])
     
@@ -53,10 +51,9 @@ def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     
     return np.array([L, a, b])
 
-def calculate_delta_e(hex_a: str, hex_b: str) -> float:
+def calculate_delta_e_2000(hex_a: str, hex_b: str) -> float:
     """
-    Calculate CIEDE2000 color difference between two hex strings.
-    Strips alpha channel if present.
+    Calculate CIEDE2000 color difference between two hex strings using Numpy.
     """
     try:
         rgb_a = _hex_to_rgb(hex_a)
@@ -65,13 +62,10 @@ def calculate_delta_e(hex_a: str, hex_b: str) -> float:
         lab_a = _rgb_to_lab(rgb_a)
         lab_b = _rgb_to_lab(rgb_b)
         
-        # CIEDE2000 Implementation
         L1, a1, b1 = lab_a
         L2, a2, b2 = lab_b
         
-        kL = 1
-        kC = 1
-        kH = 1
+        kL = kC = kH = 1
         
         C1 = np.sqrt(a1**2 + b1**2)
         C2 = np.sqrt(a2**2 + b2**2)
@@ -91,11 +85,10 @@ def calculate_delta_e(hex_a: str, hex_b: str) -> float:
         if C1_prime == 0: h1_prime = 0
         if C2_prime == 0: h2_prime = 0
         
-        # Delta L, C, H
         dL_prime = L2 - L1
         dC_prime = C2_prime - C1_prime
         
-        dh_prime = 0
+        dH_prime = 0
         if C1_prime * C2_prime != 0:
             diff = h2_prime - h1_prime
             if abs(diff) <= 180:
@@ -105,9 +98,8 @@ def calculate_delta_e(hex_a: str, hex_b: str) -> float:
             elif diff < -180:
                 dh_prime = diff + 360
                 
-        dH_prime = 2 * np.sqrt(C1_prime * C2_prime) * np.sin(np.radians(dh_prime / 2))
+        dH_prime = 2 * np.sqrt(C1_prime * C2_prime) * np.sin(np.radians(dH_prime / 2))
         
-        # Mean values
         L_bar_prime = (L1 + L2) / 2
         C_bar_prime = (C1_prime + C2_prime) / 2
         
@@ -117,10 +109,10 @@ def calculate_delta_e(hex_a: str, hex_b: str) -> float:
                 h_bar_prime = h_bar_prime / 2
             elif abs(h1_prime - h2_prime) > 180 and (h1_prime + h2_prime) < 360:
                 h_bar_prime = (h_bar_prime + 360) / 2
-            elif abs(h1_prime - h2_prime) > 180 and (h1_prime + h2_prime) >= 360:
+            elif abs(h1_prime - h2_prime) > 180:
                 h_bar_prime = (h_bar_prime - 360) / 2
         else:
-             h_bar_prime = h1_prime + h2_prime # One is 0
+             h_bar_prime = h1_prime + h2_prime
         
         T = 1 - 0.17 * np.cos(np.radians(h_bar_prime - 30)) + \
             0.24 * np.cos(np.radians(2 * h_bar_prime)) + \
@@ -144,108 +136,144 @@ def calculate_delta_e(hex_a: str, hex_b: str) -> float:
         return float(delta_e)
         
     except Exception as e:
-        print(f"Error calculating Delta E for {hex_a} and {hex_b}: {e}")
-        return 100.0 # Return high diff on error
+        print(f"Error calculating Delta E: {e}")
+        return 999.0
 
-# --- Printer Matching Logic ---
+# --- Service Logic ---
 
-async def find_best_printer_for_job(
-    session: AsyncSession,
-    required_colors: list[str],
-    required_material: str
-) -> Optional[dict]:
+class FilamentManager:
     """
-    Find the best idle printer with matching material and all required colors.
-    Returns dictionary with printer serial and AMS mapping, or None.
-    
-    Return Format:
-    {
-        "printer_serial": str,
-        "ams_mapping": List[int] # Maps required_colors[i] -> slot_index
-    }
+    The Brain of the Filament Management System (FMS).
+    Matches jobs to printers based on filament requirements.
     """
-    
-    # 1. Query all IDLE printers with their AMS slots
-    from sqlalchemy.orm import selectinload
-    
-    statement = select(Printer).where(Printer.current_status == PrinterStatusEnum.IDLE).options(selectinload(Printer.ams_slots))
-    result = await session.exec(statement)
-    printers = result.all()
-    
-    for printer in printers:
-        if not printer.ams_slots:
-            continue
-            
-        # Filter slots by material first
-        valid_slots = [
-            slot for slot in printer.ams_slots 
-            if slot.tray_type and slot.tray_type.lower() == required_material.lower() 
-            and slot.tray_color
-        ]
+
+    async def find_best_printer(
+        self, 
+        session: AsyncSession, 
+        job: Job,
+        product: Optional[any] = None # Avoid circular import if Product generic, or use forward ref
+    ) -> Optional[Tuple[Printer, List[int]]]:
+        """
+        Finds the best idle printer for a given job.
         
-        if len(valid_slots) < len(required_colors):
-            continue
+        Args:
+            session: Async DB session.
+            job: The job to schedule.
+            product: The product associated with the job (optional optimization vs lazy load).
             
-        # Try to find a match for EACH required color
-        # We need to map each req_color index to a slot_index
-        # One slot can potentially satisfy multiple requirements of the same color? 
-        # Requirement says: "A printer is valid ONLY IF it has all required_colors loaded"
-        # Usually for multi-color prints, you need distinct slots if they are different colors.
-        # If they are the SAME color, you might use one slot or multiple. 
-        # For simplicity and likely intent: specific slots for specific AMS mappings.
-        # But if I need 2x Red and I have 1 Red slot, can I use it? Usually yes.
-        # However, to be safe and avoid "running out", one might map to distinct slots.
-        # But the prompt says "ams_mapping: List[int] # e.g., [0, 3]".
-        # Let's assume strict distinct slots best for safety, OR allow reuse. 
-        # Given "Brain matching orders to printers", if I have a 4-color print 
-        # with Red, Blue, Green, Yellow, I need 4 slots.
-        # If I have Red, Red, I probably need 2 slots OR 1 slot is fine.
-        # Let's try to find a Best Match.
-        # Greedy matching: for each req_color, find best available slot.
-        # To avoid using the same slot for different colors (impossible) -> obviously checked by color diff.
-        # To avoid using the same slot for same color -> maybe necessary? 
-        # Let's assume REUSE IS ALLOWED for same color requirements unless specified otherwise. 
-        # Actually, simpler: For each requirement, find a slot with Delta E < 5.
+        Returns:
+            Tuple[Printer, List[int]]: (Best Printer, AMS Mapping) or None.
+        """
         
-        ams_mapping = []
-        full_match_found = True
+        # Step A: Fetch Candidates
+        query = (
+            select(Printer)
+            .where(Printer.current_status == PrinterStatusEnum.IDLE)
+            .options(selectinload(Printer.ams_slots))
+        )
+        result = await session.execute(query)
+        candidates = result.scalars().all()
+
+        if not candidates:
+            return None
+
+        # Step B: Get Requirements
+        requirements = self._get_job_requirements(job, product)
         
-        for req_color in required_colors:
-            best_slot_for_this_color = None
-            min_delta = 5.0
+        if not requirements:
+            # If no filament required, return first idle printer with empty mapping
+            return candidates[0], []
+
+        # Step C & D: Iterate and Match
+        for printer in candidates:
+            ams_mapping = self._match_printer(printer, requirements)
+            if ams_mapping is not None:
+                return printer, ams_mapping
+
+        return None
+
+    def _get_job_requirements(self, job: Job, product: Optional[any] = None) -> List[dict]:
+        """
+        Extracts filament requirements from the job.
+        """
+        # product passed explicitly or try to find it
+        if not product:
+             product = getattr(job, "product", None)
+        
+        # Fallback if product not directly on job (e.g. check order items)
+        if not product and job.order and job.order.items:
+             # Logic to find product from order items would go here
+             pass
+
+        if not product:
+            return []
+
+        # Check for 'filament_requirements' list (New Model)
+        if hasattr(product, "filament_requirements") and product.filament_requirements:
+            return [
+                {
+                    "material": r.material,
+                    "hex_color": r.hex_color,
+                    "virtual_id": getattr(r, "virtual_slot_id", i)
+                }
+                for i, r in enumerate(product.filament_requirements)
+            ]
+        
+        # Fallback to legacy fields (V1 Model)
+        material = getattr(product, "required_filament_type", "PLA")
+        color = getattr(product, "required_filament_color", None)
+        
+        if material and color:
+            return [{"material": material, "hex_color": color, "virtual_id": 0}]
+        
+        return []
+
+    def _match_printer(self, printer: Printer, requirements: List[dict]) -> Optional[List[int]]:
+        """
+        Checks if a printer satisfies all requirements.
+        Returns the mapping list if valid, else None.
+        """
+        mapping = [None] * len(requirements)
+        used_physical_slots = set()
+        
+        # Sort requirements by virtual_id
+        sorted_reqs = sorted(requirements, key=lambda x: x.get('virtual_id', 0))
+        
+        for i, req in enumerate(sorted_reqs):
+            req_material = req['material']
+            req_color = req['hex_color']
             
-            for slot in valid_slots:
-                # Calculate Delta E
-                d_e = calculate_delta_e(req_color, slot.tray_color)
-                if d_e < min_delta:
-                    min_delta = d_e
-                    best_slot_for_this_color = slot
+            match_found = False
+            best_slot_index = -1
+            min_delta_e = 5.0 # Threshold
             
-            if best_slot_for_this_color:
-                # We found a slot for this color
-                # Note: `slot_index` is what we need. 
-                # Be careful: `ams_slots` has `ams_index` (0-3) and `slot_index` (0-3). 
-                # Bambu usually maps AMS 0: 0-3, AMS 1: 4-7 etc.
-                # But `AmsSlot` model has `ams_index` and `slot_index`.
-                # The return format example says `ams_mapping: List[int]`.
-                # If we have multiple AMS units, we need a flat index? 
-                # Usually simple setup is 1 AMS (0-3).
-                # Let's explicitly use the `AmsSlot.id` or consistent mapping?
-                # The prompt example: "ams_mapping: List[int]".
-                # The `AmsSlotRead` in `printer.py` had `ams_index` and `slot_index`.
-                # Let's assume flat index 0-15 (4 AMS * 4 Slots) logic: index = ams_index * 4 + slot_index.
+            for slot in printer.ams_slots:
+                # Calculate global slot index (0-15)
+                # ams_index (0-3) * 4 + slot_index (0-3)
+                pid = slot.ams_index * 4 + slot.slot_index
                 
-                flat_index = best_slot_for_this_color.ams_index * 4 + best_slot_for_this_color.slot_index
-                ams_mapping.append(flat_index)
-            else:
-                full_match_found = False
-                break
-        
-        if full_match_found:
-            return {
-                "printer_serial": printer.serial,
-                "ams_mapping": ams_mapping
-            }
+                if pid in used_physical_slots:
+                    continue
+                
+                # 1. Strict Material Match
+                if not slot.tray_type or slot.tray_type.lower() != req_material.lower():
+                    continue
+                
+                # 2. Color Match
+                if not slot.tray_color:
+                    continue
+                    
+                delta_e = calculate_delta_e_2000(req_color, slot.tray_color)
+                
+                if delta_e < min_delta_e:
+                    min_delta_e = delta_e
+                    best_slot_index = pid
+                    match_found = True
             
-    return None
+            if match_found:
+                mapping[i] = best_slot_index
+                used_physical_slots.add(best_slot_index)
+            else:
+                return None # Fail
 
+        return mapping

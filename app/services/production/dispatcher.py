@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import async_session_maker
 from app.models.core import Job, Printer, Product, JobStatusEnum, PrinterStatusEnum, OrderStatusEnum
 from app.models.order import Order
-from app.services.logic.filament_manager import find_best_printer_for_job
+from app.services.logic.filament_manager import FilamentManager
 from app.services.printer.commander import PrinterCommander
 
 logger = logging.getLogger("ProductionDispatcher")
@@ -16,6 +16,7 @@ logger = logging.getLogger("ProductionDispatcher")
 class ProductionDispatcher:
     def __init__(self):
         self.commander = PrinterCommander()
+        self.filament_manager = FilamentManager()
         self.is_running = False
 
     async def start(self):
@@ -39,7 +40,6 @@ class ProductionDispatcher:
         """Single iteration of the dispatch logic."""
         async with async_session_maker() as session:
             # 1. Fetch PENDING Jobs
-            # We assume Job.gcode_path links to Product.file_path_3mf
             statement = select(Job).where(Job.status == JobStatusEnum.PENDING)
             result = await session.exec(statement)
             pending_jobs = result.all()
@@ -51,7 +51,6 @@ class ProductionDispatcher:
 
             for job in pending_jobs:
                 # 2. Get Product Requirements
-                # We need to find the product that matches this gcode
                 prod_stmt = select(Product).where(Product.file_path_3mf == job.gcode_path)
                 prod_result = await session.exec(prod_stmt)
                 product = prod_result.first()
@@ -60,31 +59,28 @@ class ProductionDispatcher:
                     logger.warning(f"Job {job.id}: Product not found for gcode {job.gcode_path}. Skipping.")
                     continue
 
-                # Prepare requirements
-                required_material = product.required_filament_type
-                # Handle color: List[str] required. Product has single Optional[str]
-                required_colors = []
-                if product.required_filament_color:
-                    required_colors.append(product.required_filament_color)
+                # Attach product to job for the logic service
+                # (The logic service expects job.product or logic to find it)
+                # job.product = product <--- REMOVED
                 
-                # if no requirements, assume generic? 
-                # FilamentManager logic might skip empty colors if we passed empty list.
-                # But let's pass what we have.
-                if not required_material:
+                # Check basic requirement existence locally or let service handle?
+                # Service returns None if no match.
+                # Only skip if no material defined?
+                if not product.required_filament_type:
                      logger.warning(f"Job {job.id}: Product has no material defined. Skipping.")
                      continue
                 
                 # 3. Find Printer
-                match = await find_best_printer_for_job(session, required_colors, required_material)
+                # New Signature: find_best_printer(session, job, product)
+                match = await self.filament_manager.find_best_printer(session, job, product=product)
                 
                 if match:
-                    printer_serial = match["printer_serial"]
-                    ams_mapping = match["ams_mapping"]
+                    printer, ams_mapping = match
                     
-                    logger.info(f"Job {job.id}: Matched to Printer {printer_serial} (AMS: {ams_mapping})")
+                    logger.info(f"Job {job.id}: Matched to Printer {printer.serial} (AMS: {ams_mapping})")
                     
                     # 4. Lock & Execute
-                    await self.assign_and_execute_job(session, job, printer_serial, ams_mapping)
+                    await self.assign_and_execute_job(session, job, printer.serial, ams_mapping)
                 else:
                     logger.debug(f"Job {job.id}: No matching IDLE printer found.")
 
@@ -94,9 +90,6 @@ class ProductionDispatcher:
         """
         try:
             # --- LOCKING ---
-            # Refetch objects to ensure fresh state/lock inside transaction if needed
-            # (Assuming we are in the same session context)
-            
             printer = await session.get(Printer, printer_serial)
             if not printer or printer.current_status != PrinterStatusEnum.IDLE:
                  logger.warning(f"Printer {printer_serial} no longer IDLE. Aborting assignment.")
@@ -108,12 +101,10 @@ class ProductionDispatcher:
             
             printer.current_status = PrinterStatusEnum.PRINTING
             
-            # Also update Order status?
-            # Usually Job PENDING -> UPLOADING implies Order is progressing.
             if job.order_id:
                 order = await session.get(Order, job.order_id)
                 if order:
-                    order.status = OrderStatusEnum.PRINTING  # Or equivalent
+                    order.status = OrderStatusEnum.PRINTING
                     session.add(order)
             
             session.add(job)
@@ -121,48 +112,14 @@ class ProductionDispatcher:
             await session.commit()
             
             # --- EXECUTION ---
-            # We use a separate try/except block for the actual comms to handle revert
             try:
-                # Fetch printer connection details
-                # (Assuming printer object has IP/Access Code from DB)
-                ip = printer.ip_address
-                access_code = printer.access_code
+                # Use High-Level Commander
+                # Note: commander.start_job expects Printer object with IP/Access Code.
+                # Our 'printer' object here is attached to session.
                 
-                if not ip or not access_code:
-                     raise ValueError("Printer IP or Access Code missing")
-
-                # Upload
-                # Target filename: ensure unique? or just basename
-                # commander.upload_file uses basename usually or we specify.
-                # job.gcode_path is the "local path" on server?
-                # Product.file_path_3mf is likely local.
-                # Assuming job.gcode_path is absolute or relative to cwd.
-                import os
-                filename = os.path.basename(job.gcode_path)
-                
-                await self.commander.upload_file(
-                    ip=ip, 
-                    access_code=access_code, 
-                    local_path=job.gcode_path, 
-                    target_filename=filename
-                )
-                
-                # Start Print
-                await self.commander.start_print_job(
-                    ip=ip,
-                    serial=printer_serial,
-                    access_code=access_code,
-                    filename=filename,
-                    ams_mapping=ams_mapping
-                )
+                await self.commander.start_job(printer, job, ams_mapping)
                 
                 # Success Update
-                # Since we committed UPLOADING/PRINTING earlier, we just update Job to PRINTING?
-                # Actually, Job status UPLOADING is fine during upload. 
-                # Now shift to PRINTING (or ensure it stays PRINTING if we mapped it so).
-                # But wait, we set Printer to PRINTING. Job to UPLOADING.
-                # Now set Job to PRINTING.
-                
                 job.status = JobStatusEnum.PRINTING
                 session.add(job)
                 await session.commit()
@@ -172,18 +129,14 @@ class ProductionDispatcher:
                 logger.error(f"Job {job.id}: Execution Failed - {exec_err}")
                 
                 # --- REVERT ---
-                # We need to revert Printer to IDLE (unless it's actually broken?)
-                # And Job to FAILED (or PENDING to retry?)
-                # User config: "Set Job status to FAILED ... and log error"
-                
-                # Refresh objects
+                # Re-fetch valid state
                 await session.refresh(job)
                 await session.refresh(printer)
                 
                 printer.current_status = PrinterStatusEnum.IDLE
                 job.status = JobStatusEnum.FAILED
                 job.error_message = str(exec_err)
-                job.assigned_printer_serial = None # Unassign?
+                job.assigned_printer_serial = None 
                 
                 session.add(printer)
                 session.add(job)
@@ -191,4 +144,3 @@ class ProductionDispatcher:
 
         except Exception as e:
             logger.error(f"Error during assignment transaction for Job {job.id}: {e}")
-            # If DB commit failed, connection issues etc.

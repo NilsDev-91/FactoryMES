@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+asyncpg
+pydantic-settings
+aiomqtt
+gmqtt
+numpy
+aioftp
+python-multipart
+httpx

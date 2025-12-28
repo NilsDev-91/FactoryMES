@@ -27,5 +27,30 @@ services:
     depends_on:
       - db
 
+  backend:
+    build: .
+    container_name: factory_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://factory_user:factory_password@db:5432/factory_db
+      POSTGRES_HOST: db
+    volumes:
+      - ./app:/code/app
+      - ./storage:/code/storage
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: factory_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+
 volumes:
   postgres_data:

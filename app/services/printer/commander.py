@@ -5,16 +5,63 @@ import json
 import logging
 import aioftp
 from typing import List, Optional
-# Assuming usage of gmqtt based on typical async stacks or we can implement a simple client here.
-# However, for stateless command execution, we can use gmqtt direct connect.
-# The user prompt specifically asked for "Logic: Connect, publish, disconnect".
 from gmqtt import Client as MQTTClient
+from app.models.core import Printer, Job
 
 logger = logging.getLogger("PrinterCommander")
 
 class PrinterCommander:
     def __init__(self):
         pass
+
+    async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int]) -> None:
+        """
+        High-level orchestrator to start a print job.
+        1. Uploads GCode/3MF to printer via FTPS.
+        2. Triggers print via MQTT if upload succeeds.
+        """
+        if not printer.ip_address or not printer.access_code:
+            raise ValueError(f"Printer {printer.serial} missing IP or Access Code")
+
+        # Determine file path
+        # Prefer specific job path, fallback to product path
+        file_path = job.gcode_path
+        if not file_path:
+            # Try getting from product if lazy loaded or available
+            product = getattr(job, "product", None)
+            if product:
+                file_path = product.file_path_3mf
+        
+        if not file_path:
+            raise ValueError(f"No file path found for Job {job.id}")
+
+        filename = file_path.split("/")[-1].split("\\")[-1]
+
+        try:
+            # 1. Upload File
+            logger.info(f"Starting upload for Job {job.id} to {printer.serial}...")
+            await self.upload_file(
+                ip=printer.ip_address, 
+                access_code=printer.access_code, 
+                local_path=file_path, 
+                target_filename=filename
+            )
+
+            # 2. Start Print
+            logger.info(f"Triggering MQTT print for Job {job.id} on {printer.serial}...")
+            await self.start_print_job(
+                ip=printer.ip_address,
+                serial=printer.serial,
+                access_code=printer.access_code,
+                filename=filename,
+                ams_mapping=ams_mapping
+            )
+            
+            logger.info(f"Job {job.id} started successfully on {printer.serial}")
+
+        except Exception as e:
+            logger.error(f"Failed to start Job {job.id} on {printer.serial}: {e}")
+            raise e
 
     async def upload_file(self, ip: str, access_code: str, local_path: str, target_filename: str) -> None:
         """
@@ -31,13 +78,9 @@ class PrinterCommander:
         logger.info(f"Uploading {local_path} to {ip} as {target_filename}...")
         
         # Configure SSL for Implicit TLS (Port 990)
-        # Bambu requires TLSv1.2 (usually) and we must ignore cert errors
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        # Force TLS 1.2 if needed, though default usually negotiates down. 
-        # But some Bambu FW is picky.
-        # context.minimum_version = ssl.TLSVersion.TLSv1_2 
         
         try:
             async with aioftp.Client.context(
@@ -55,7 +98,6 @@ class PrinterCommander:
                 try:
                     await client.make_directory(target_dir)
                 except aioftp.StatusCodeError:
-                    # Likely exists
                     pass
                 
                 # Change directory
@@ -90,11 +132,8 @@ class PrinterCommander:
         logger.info(f"Sending Print Command to {serial} ({ip})...")
         
         client = MQTTClient(client_id=f"commander_{serial}")
-        
-        # Bambu MQTT Auth
         client.set_auth_credentials("bblp", access_code)
         
-        # SSL Context for MQTT (8883)
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -142,4 +181,3 @@ async def _async_wait(event: asyncio.Event, timeout=10):
         await asyncio.wait_for(event.wait(), timeout)
     except asyncio.TimeoutError:
          raise TimeoutError("MQTT Connection Timeout")
-
