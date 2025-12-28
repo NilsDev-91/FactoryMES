@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Thermometer, Wind, Waves, Package, AlertTriangle, CheckCircle, Clock } from 'lucide-react';
+import { Settings, Clock } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -7,156 +7,108 @@ function cn(...inputs) {
     return twMerge(clsx(inputs));
 }
 
-const PrinterCard = ({ printer }) => {
-    // Use raw snake_case fields from backend
-    const status = (printer.current_status || 'offline').toLowerCase();
-    const isOffline = status === 'offline';
+/**
+ * High-Density PrinterCard
+ * Design: Dark Mode / Industrial / High Scalability (500+ units)
+ * Status Color Logic: 
+ * - idle: Purple
+ * - printing: Yellow
+ * - done: Green
+ * - error: Red
+ */
+const PrinterCard = ({ printer, onSettingsClick }) => {
+    // Standardize status
+    const status = (printer.current_status || 'idle').toLowerCase();
+    const progress = printer.current_progress || 0;
+    const timeLeft = printer.remaining_time ? `${printer.remaining_time}m` : null;
 
-    // Determine styles based on status
-    const getStatusStyles = () => {
-        switch (status) {
-            case 'printing':
-                return {
-                    border: 'border-l-green-500',
-                    badge: 'bg-green-500/10 text-green-400',
-                    progress: 'bg-green-500'
-                };
-            case 'idle':
-            case 'waiting':
-                return {
-                    border: 'border-l-purple-500',
-                    badge: 'bg-purple-500/10 text-purple-400',
-                    progress: 'bg-slate-600'
-                };
-            case 'ready':
-                return {
-                    border: 'border-l-blue-500',
-                    badge: 'bg-blue-500/10 text-blue-400',
-                    progress: 'bg-slate-600'
-                };
-            case 'warning':
-                return {
-                    border: 'border-l-yellow-500',
-                    badge: 'bg-yellow-500/10 text-yellow-400',
-                    progress: 'bg-yellow-500'
-                };
-            case 'offline':
-            default:
-                return {
-                    border: 'border-l-slate-600',
-                    badge: 'bg-slate-700 text-slate-400',
-                    progress: 'bg-slate-700'
-                };
+    // Strict color mapping per requirements
+    const statusConfig = {
+        idle: {
+            border: 'border-purple-500',
+            text: 'text-purple-500',
+            bg: 'bg-purple-500/20',
+            progress: 'bg-purple-500',
+        },
+        printing: {
+            border: 'border-yellow-500',
+            text: 'text-yellow-500',
+            bg: 'bg-yellow-500/20',
+            progress: 'bg-yellow-500',
+        },
+        done: {
+            border: 'border-green-500',
+            text: 'text-green-500',
+            bg: 'bg-green-500/20',
+            progress: 'bg-green-500',
+        },
+        error: {
+            border: 'border-red-500',
+            text: 'text-red-500',
+            bg: 'bg-red-500/20',
+            progress: 'bg-red-500',
         }
     };
 
-    const styles = getStatusStyles();
-
-    // Helper to format remaining minutes
-    const formatTime = (minutes) => {
-        if (!minutes) return '--:--';
-        const h = Math.floor(minutes / 60);
-        const m = minutes % 60;
-        return `${h}h ${m}m`;
-    };
+    const config = statusConfig[status] || statusConfig.idle;
 
     return (
-        <div
-            className={cn(
-                "bg-slate-800 rounded-lg p-4 border border-slate-700/50 shadow-sm hover:shadow-md transition-shadow",
-                "border-l-4",
-                styles.border,
-                // Opacity for offline printers to visually de-emphasize them
-                isOffline && "opacity-60 grayscale-[0.5] hover:opacity-100 hover:grayscale-0 transition-all duration-300"
-            )}
-        >
+        <div className={cn(
+            "group relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all hover:border-slate-700 h-[100px]",
+            "flex flex-col"
+        )}>
+            {/* 4px Colored Strip on Left */}
+            <div className={cn("absolute left-0 top-0 bottom-0 w-1 transition-all group-hover:w-1.5", config.progress)} />
 
-            {/* Header */}
-            <div className="flex justify-between items-start mb-3">
-                <div>
-                    <h3 className="font-bold text-slate-100 text-lg truncate max-w-[150px]" title={printer.name}>
-                        {printer.name}
-                    </h3>
-                    <span className="text-xs text-slate-500 font-mono">{printer.model || 'Bambu Lab P1S'}</span>
-                </div>
-                <span className={cn(
-                    "px-2 py-0.5 rounded-full text-xs font-medium uppercase tracking-wide border border-transparent",
-                    styles.badge
-                )}>
-                    {status}
-                </span>
-            </div>
-
-            {/* Thumbnail Area */}
-            <div className="aspect-video bg-slate-900/50 rounded-md mb-4 flex items-center justify-center border border-slate-700/50 relative overflow-hidden group">
-                {status === 'printing' ? (
-                    // Show mock print progress or image
-                    <div className="flex flex-col items-center justify-center text-slate-500">
-                        <Package className="animate-pulse text-green-500/50 mb-2" size={32} />
-                        <span className="text-xs">Printing Layer {printer.layer || '?'}/{printer.totalLayers || '?'}</span>
+            <div className="flex-1 p-4 pl-5 flex flex-col justify-between">
+                {/* Header */}
+                <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                        {/* Colored Dot */}
+                        <div className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]", config.progress)} />
+                        <h3 className="font-bold text-white truncate uppercase tracking-tight text-sm" title={printer.name}>
+                            {printer.name}
+                        </h3>
                     </div>
-                ) : (
-                    <div className="text-slate-600">
-                        <PrinterIcon status={status} />
+
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onSettingsClick?.(printer);
+                        }}
+                        className="p-1.5 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all active:scale-95"
+                    >
+                        <Settings size={16} />
+                    </button>
+                </div>
+
+                {/* Footer (Progress & Time) */}
+                <div className="space-y-1.5">
+                    <div className="flex justify-between items-end text-[10px] font-black uppercase tracking-widest leading-none">
+                        <span className={config.text}>{progress}%</span>
+                        {status === 'printing' && timeLeft && (
+                            <span className="text-slate-500 flex items-center gap-1 font-mono">
+                                <Clock size={10} /> {timeLeft} left
+                            </span>
+                        )}
+                        {status !== 'printing' && (
+                            <span className={cn("px-1.5 py-0.5 rounded-[4px] text-[8px]", config.bg, config.text)}>
+                                {status}
+                            </span>
+                        )}
                     </div>
-                )}
-            </div>
 
-            {/* Progress Section */}
-            <div className="mb-4">
-                <div className="flex justify-between text-xs text-slate-400 mb-1.5">
-                    <span className="flex items-center gap-1"><Clock size={12} /> {formatTime(printer.remaining_time)}</span>
-                    <span className="font-medium text-slate-200">{printer.current_progress || 0}%</span>
-                </div>
-                <div className="h-2 w-full bg-slate-700/50 rounded-full overflow-hidden">
-                    <div
-                        className={cn("h-full rounded-full transition-all duration-1000", styles.progress)}
-                        style={{ width: `${printer.current_progress || 0}%` }}
-                    />
-                </div>
-            </div>
-
-            {/* Telemetry Grid */}
-            <div className="grid grid-cols-3 gap-2 mb-4 bg-slate-900/30 p-2 rounded border border-slate-700/30">
-                <TelemetryItem icon={Thermometer} label="Nozzle" value={`${printer.current_temp_nozzle?.toFixed(0) || 0}°C`} />
-                <TelemetryItem icon={Waves} label="Bed" value={`${printer.current_temp_bed?.toFixed(0) || 0}°C`} />
-                <TelemetryItem icon={Wind} label="Fan" value={`${printer.fan_speed || 0}%`} />
-            </div>
-
-            {/* AMS Slots (Real Data) */}
-            <div className="flex gap-2 justify-center">
-                {printer.ams_data && printer.ams_data.length > 0 ? (
-                    printer.ams_data.map((slot, i) => (
+                    {/* Highly Visible Progress Bar */}
+                    <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-950/50">
                         <div
-                            key={slot.slot || i}
-                            className="w-4 h-4 rounded-full border border-slate-600 shadow-sm relative group cursor-pointer"
-                            style={{ backgroundColor: slot.color || '#334155' }}
-                            title={`Slot ${i + 1}: ${slot.type} (${slot.remaining || 0}%)`}
-                        >
-                            {/* Optional: Check for empty slot explicitly if needed */}
-                        </div>
-                    ))
-                ) : (
-                    <span className="text-[10px] text-slate-500">No AMS Data</span>
-                )}
+                            className={cn("h-full transition-all duration-1000 shadow-[0_0_10px_rgba(0,0,0,0.3)]", config.progress)}
+                            style={{ width: `${progress}%` }}
+                        />
+                    </div>
+                </div>
             </div>
         </div>
     );
-};
-
-// Helper Components
-const TelemetryItem = ({ icon: Icon, label, value }) => (
-    <div className="flex flex-col items-center justify-center text-center">
-        <Icon size={14} className="text-slate-500 mb-1" />
-        <span className="text-xs font-bold text-slate-200">{value}</span>
-        <span className="text-[10px] text-slate-600 uppercase">{label}</span>
-    </div>
-);
-
-const PrinterIcon = ({ status }) => {
-    if (status === 'offline') return <AlertTriangle size={32} />;
-    if (status === 'ready') return <CheckCircle size={32} />;
-    return <Package size={32} />;
 };
 
 // Custom Comparison for React.memo
@@ -164,14 +116,11 @@ const arePropsEqual = (prevProps, nextProps) => {
     const prev = prevProps.printer;
     const next = nextProps.printer;
 
-    // Render only if these specific visual fields change (Strict check per request)
     return (
         prev.current_status === next.current_status &&
-        // Round to integer to avoid re-render on micro-fluctuations (e.g. 210.1 -> 210.2)
-        Math.round(prev.current_temp_nozzle) === Math.round(next.current_temp_nozzle) &&
-        Math.round(prev.current_temp_bed) === Math.round(next.current_temp_bed) &&
         prev.current_progress === next.current_progress &&
-        prev.remaining_time === next.remaining_time
+        prev.remaining_time === next.remaining_time &&
+        prev.name === next.name
     );
 };
 

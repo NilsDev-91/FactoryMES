@@ -3,26 +3,29 @@ import React, { useEffect, useState } from 'react';
 import { fetchOrders, fetchPrinters } from './api';
 import { LayoutDashboard, RefreshCw, Printer, Package, ShoppingCart } from 'lucide-react';
 import { Sidebar } from './components/layout/Sidebar';
-import { TopBar } from './components/layout/TopBar'; // Ensure this is exported named or adjust
+import { TopBar } from './components/layout/TopBar';
 import DashboardView from './components/views/DashboardView';
 import FleetView from './components/views/FleetView';
 import ProductView from './components/views/ProductView';
 import OrdersView from './components/views/OrdersView';
+import AddPrinterModal from './components/modals/AddPrinterModal';
 
 function App() {
   const [currentView, setCurrentView] = useState('Dashboard');
   const [orders, setOrders] = useState([]);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [localPrinters, setLocalPrinters] = useState([]);
 
-  // --- Global Data Fetching (Replaced useSWR with useEffect due to crash) ---
-  const [printers, setPrinters] = useState([]);
+  // --- Global Data Fetching ---
+  const [fetchedPrinters, setFetchedPrinters] = useState([]);
   const [isValidating, setIsValidating] = useState(false);
 
   const refreshPrinters = async () => {
     setIsValidating(true);
     try {
       const data = await fetchPrinters();
-      setPrinters(data || []);
+      setFetchedPrinters(data || []);
     } catch (e) {
       console.error("Printer Fetch Error", e);
     } finally {
@@ -30,11 +33,23 @@ function App() {
     }
   };
 
+  // Merge fetched and local printers
+  const printers = [...localPrinters, ...fetchedPrinters];
+
   useEffect(() => {
     refreshPrinters();
     const interval = setInterval(refreshPrinters, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleAddPrinter = (newPrinter) => {
+    // Check if printer with same serial already exists in either list
+    if (printers.some(p => p.serial === newPrinter.serial)) {
+      alert("A printer with this serial already exists.");
+      return;
+    }
+    setLocalPrinters(prev => [newPrinter, ...prev]);
+  };
 
   const refreshOrders = async () => {
     try {
@@ -51,7 +66,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-white font-sans selection:bg-blue-500/30 overflow-x-hidden">
-      <TopBar />
+      <TopBar onAddClick={() => setShowAddModal(true)} />
       <Sidebar
         activeView={currentView}
         onNavigate={setCurrentView}
@@ -90,7 +105,7 @@ function App() {
             )}
 
             {currentView === 'Fleet' && (
-              <FleetView printers={printers} />
+              <FleetView printers={printers} onAddClick={() => setShowAddModal(true)} />
             )}
 
             {currentView === 'Products' && (
@@ -110,6 +125,11 @@ function App() {
           </div>
         </div>
       </main>
+      <AddPrinterModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onAdd={handleAddPrinter}
+      />
     </div>
   );
 }
