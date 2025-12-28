@@ -92,5 +92,8 @@ class Product(SQLModel, table=True):
     # Material Requirements
     required_filament_type: str = Field(default="PLA") # e.g. PLA, PETG, ABS
     required_filament_color: Optional[str] = Field(default=None) # Hex Code or Name, e.g. "#FF0000"
+    
+    # New: JSON Requirements for multi-color/master slicing
+    filament_requirements: Optional[List[dict]] = Field(default=None, sa_column=Column(JSON))
 
     created_at: datetime = Field(default_factory=datetime.now)

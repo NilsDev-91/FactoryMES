@@ -46,5 +46,13 @@ class OrderRead(SQLModel):
     status: str
     created_at: datetime
     items: List[OrderItemRead] = []
+    jobs: List["JobRead"] = []
+
+class JobRead(SQLModel):
+    id: int
+    status: str
+    filament_requirements: Optional[List[dict]] = None
+    gcode_path: str
+    assigned_printer_serial: Optional[str] = None
 
 # Relationship to Job is handled via string reference

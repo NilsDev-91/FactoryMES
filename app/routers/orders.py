@@ -13,7 +13,7 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
 
 @router.get("", response_model=List[OrderRead])
 async def get_orders(session: AsyncSession = Depends(get_session)):
-    result = await session.execute(select(Order).options(selectinload(Order.items)))
+    result = await session.execute(select(Order).options(selectinload(Order.items), selectinload(Order.jobs)).order_by(Order.created_at.desc()))
     return result.scalars().all()
 
 @router.post("", response_model=Order)

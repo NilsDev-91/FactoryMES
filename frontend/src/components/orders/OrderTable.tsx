@@ -9,6 +9,18 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // Interfaces matching Backend OrderRead
+export interface FilamentReq {
+    material: string;
+    hex_color: string;
+    virtual_id: number;
+}
+
+export interface Job {
+    id: number;
+    status: string;
+    filament_requirements: FilamentReq[];
+}
+
 export interface OrderItem {
     sku: string;
     quantity: number;
@@ -25,6 +37,7 @@ export interface Order {
     status: string; // OPEN, QUEUED, PRINTING, DONE, FAILED
     created_at: string;
     items: OrderItem[];
+    jobs: Job[];
 }
 
 interface OrderTableProps {
@@ -73,6 +86,7 @@ export function OrderTable({ orders }: OrderTableProps) {
                             <th className="px-6 py-4">Order ID</th>
                             <th className="px-6 py-4">Date</th>
                             <th className="px-6 py-4">Items</th>
+                            <th className="px-6 py-4">Filament</th>
                             <th className="px-6 py-4 text-right">Total</th>
                             <th className="px-6 py-4 text-center">Status</th>
                         </tr>
@@ -98,6 +112,40 @@ export function OrderTable({ orders }: OrderTableProps) {
                                                 )}
                                             </div>
                                         ))}
+                                    </div>
+                                </td>
+                                <td className="px-6 py-4">
+                                    <div className="flex flex-col gap-1">
+                                        {order.jobs && order.jobs.length > 0 ? (
+                                            order.jobs.map((job) => (
+                                                <div key={job.id} className="flex items-center gap-2">
+                                                    {/* Job Status Indicator */}
+                                                    <div className={cn(
+                                                        "w-1 h-3 rounded-full",
+                                                        job.status === 'PENDING' ? "bg-yellow-500" :
+                                                            job.status === 'PRINTING' ? "bg-green-500 animate-pulse" :
+                                                                job.status === 'FAILED' ? "bg-red-500" : "bg-slate-500"
+                                                    )} title={`Job Status: ${job.status}`} />
+
+                                                    {/* Filament Dots */}
+                                                    <div className="flex -space-x-1 hover:space-x-1 transition-all">
+                                                        {job.filament_requirements?.map((req, i) => (
+                                                            <div
+                                                                key={i}
+                                                                className="w-4 h-4 rounded-full border border-slate-800 shadow-sm"
+                                                                style={{ backgroundColor: req.hex_color }}
+                                                                title={`${req.material} - ${req.hex_color}`}
+                                                            />
+                                                        ))}
+                                                        {(!job.filament_requirements || job.filament_requirements.length === 0) && (
+                                                            <span className="text-xs text-slate-600 italic">No Reqs</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <span className="text-xs text-slate-600">-</span>
+                                        )}
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 text-right font-mono text-slate-300">

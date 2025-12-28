@@ -96,15 +96,21 @@ class PrinterCommander:
                 # Check/Create directory
                 target_dir = "/sdcard/factoryos"
                 try:
-                    await client.make_directory(target_dir)
-                except aioftp.StatusCodeError:
-                    pass
-                
+                    # Bambu Printer returns 250 for MKD, standard is 257.
+                    # We manually send command to accept both.
+                    await client.command(f"MKD {target_dir}", expected_codes=(250, 257))
+                except aioftp.StatusCodeError as e:
+                    # 550 usually means directory already exists (or permission denied)
+                    # We can ignore 550 and try CWD.
+                    if "550" not in str(e):
+                        logger.warning(f"MKD failed with unexpected error: {e}")
+
                 # Change directory
                 await client.change_directory(target_dir)
                 
                 # Upload
-                await client.upload(local_path, target_filename)
+                # write_into=True suppresses internal make_directory call which fails on Bambu (250 vs 257)
+                await client.upload(local_path, target_filename, write_into=True)
                 logger.info(f"Upload to {ip} complete.")
                 
         except Exception as e:

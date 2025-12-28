@@ -196,6 +196,17 @@ class FilamentManager:
         """
         Extracts filament requirements from the job.
         """
+        # 0. Prioritize Job-Specific Requirements (e.g. from Order Processor overrides)
+        if getattr(job, "filament_requirements", None):
+             return [
+                {
+                    "material": r.get("material", "PLA"),
+                    "hex_color": r.get("hex_color", "#000000"),
+                    "virtual_id": r.get("virtual_id", 0)
+                }
+                for r in job.filament_requirements
+             ]
+
         # product passed explicitly or try to find it
         if not product:
              product = getattr(job, "product", None)

@@ -205,7 +205,18 @@ class PrinterMqttWorker:
                                     target_slot = slot
                                     break
                             
-                            if target_slot and tray_data:
+                            if not target_slot:
+                                target_slot = AmsSlot(
+                                    printer_id=printer.serial,
+                                    ams_index=ams_idx,
+                                    slot_index=tray_idx,
+                                    tray_color="",
+                                    tray_type=""
+                                )
+                                session.add(target_slot)
+                                printer.ams_slots.append(target_slot)
+
+                            if tray_data:
                                 # Update Slot
                                 # Colors from Bambu are often like "FF00FF00" (RGBA?) or just Hex. 
                                 # We treat as Hex string.

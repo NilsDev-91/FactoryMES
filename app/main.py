@@ -55,7 +55,6 @@ async def lifespan(app: FastAPI):
     app.state.dispatcher = dispatcher
     # Startet die Endlosschleife im Hintergrund
     app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
-    app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
     logger.info("🧠 Production Dispatcher Loop started.")
 
     # 4. Start eBay Order Processor
@@ -73,7 +72,7 @@ async def lifespan(app: FastAPI):
         await app.state.dispatcher.stop()
     if hasattr(app.state, "dispatcher_task"):
         app.state.dispatcher_task.cancel()
-
+    
     # Stop Order Processor
     if hasattr(app.state, "order_processor"):
         app.state.order_processor.running = False
@@ -91,7 +90,13 @@ app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Für Dev offen lassen
+    # Explicitly allow frontend origin to support allow_credentials=True
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173", # Vite Default
+        "http://127.0.0.1:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
