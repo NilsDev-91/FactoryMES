@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Thermometer, Wind, Box, Play, Square, Download, Activity, FileText, Layers } from 'lucide-react';
+import LiveTelemetryCard from '../printers/LiveTelemetryCard';
 
 const PrinterDetailModal = ({ printer, isOpen, onClose }) => {
     if (!isOpen || !printer) return null;
@@ -49,33 +50,33 @@ const PrinterDetailModal = ({ printer, isOpen, onClose }) => {
                                 <Activity size={14} className="text-blue-500" /> System Telemetry
                             </h3>
                             <div className="grid grid-cols-2 gap-4">
-                                <TelemetryCard
+                                <LiveTelemetryCard
                                     label="Nozzle Temp"
                                     value={printer.current_temp_nozzle}
                                     unit="°C"
-                                    icon={<Thermometer size={16} className="text-orange-500" />}
-                                    color="border-orange-500/20 bg-orange-500/5"
+                                    icon={Thermometer}
+                                    color="orange"
                                 />
-                                <TelemetryCard
+                                <LiveTelemetryCard
                                     label="Bed Temp"
                                     value={printer.current_temp_bed}
                                     unit="°C"
-                                    icon={<Thermometer size={16} className="text-red-500" />}
-                                    color="border-red-500/20 bg-red-500/5"
+                                    icon={Thermometer}
+                                    color="orange"
                                 />
-                                <TelemetryCard
+                                <LiveTelemetryCard
                                     label="Chamber"
                                     value={32.4}
                                     unit="°C"
-                                    icon={<Box size={16} className="text-yellow-500" />}
-                                    color="border-yellow-500/20 bg-yellow-500/5"
+                                    icon={Box}
+                                    color="emerald"
                                 />
-                                <TelemetryCard
+                                <LiveTelemetryCard
                                     label="Fan Speed"
                                     value={85}
                                     unit="%"
-                                    icon={<Wind size={16} className="text-blue-400" />}
-                                    color="border-blue-500/20 bg-blue-500/5"
+                                    icon={Wind}
+                                    color="cyan"
                                 />
                             </div>
                         </div>

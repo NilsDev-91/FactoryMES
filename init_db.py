@@ -2,8 +2,9 @@
 import asyncio
 import sys
 from sqlmodel import select, SQLModel
-from database import engine, async_session_maker
-from models import Printer, Order, Product, PlatformEnum, PrinterTypeEnum, PrinterStatusEnum, OrderStatusEnum
+from app.core.database import engine, async_session_maker
+from app.models.core import Printer, Product, PlatformEnum, PrinterTypeEnum, PrinterStatusEnum, OrderStatusEnum
+from app.models.order import Order, OrderItem
 from datetime import datetime
 import uuid
 
@@ -41,14 +42,23 @@ async def init_db():
         if not orders:
             print("Seeding Order...")
             order = Order(
-                platform=PlatformEnum.ETSY,
-                platform_order_id=str(uuid.uuid4())[:8],
-                sku="BENCHY_TEST",
-                quantity=1,
-                purchase_date=datetime.now(),
-                status=OrderStatusEnum.OPEN
+                ebay_order_id=str(uuid.uuid4())[:8],
+                buyer_username="test_buyer",
+                total_price=19.99,
+                currency="EUR",
+                status="OPEN"
             )
             session.add(order)
+            await session.flush()
+            
+            item = OrderItem(
+                order_id=order.id,
+                sku="BENCHY_TEST",
+                title="Test Benchy",
+                quantity=1,
+                variation_details="Color: Red"
+            )
+            session.add(item)
             
         # Check for Product
         result = await session.execute(select(Product))

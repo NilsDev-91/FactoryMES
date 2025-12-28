@@ -1,9 +1,11 @@
 
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 from sqlalchemy import JSON, Column
 from sqlmodel import SQLModel, Field, Relationship
 from enum import Enum
+if TYPE_CHECKING:
+    from app.models.filament import AmsSlot
 
 class PlatformEnum(str, Enum):
     ETSY = "ETSY"
@@ -34,19 +36,7 @@ class JobStatusEnum(str, Enum):
     FINISHED = "FINISHED"
     FAILED = "FAILED"
 
-class Order(SQLModel, table=True):
-    __tablename__ = "orders"
-    
-    id: Optional[int] = Field(default=None, primary_key=True)
-    platform: PlatformEnum
-    platform_order_id: str = Field(unique=True, index=True)
-    sku: str
-    quantity: int
-    purchase_date: datetime
-    status: OrderStatusEnum = Field(default=OrderStatusEnum.OPEN)
-    error_message: Optional[str] = None
-    
-    jobs: List["Job"] = Relationship(back_populates="order")
+# Legacy Order removed, moved to app.models.order
 
 class Printer(SQLModel, table=True):
     __tablename__ = "printers"
@@ -68,6 +58,7 @@ class Printer(SQLModel, table=True):
     ams_data: List[dict] = Field(default=[], sa_column=Column(JSON))
     
     jobs: List["Job"] = Relationship(back_populates="assigned_printer")
+    ams_slots: List["AmsSlot"] = Relationship(back_populates="printer")
 
 class Job(SQLModel, table=True):
     __tablename__ = "jobs"
@@ -80,7 +71,7 @@ class Job(SQLModel, table=True):
     error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
 
-    order: Optional[Order] = Relationship(back_populates="jobs")
+    order: Optional["Order"] = Relationship(back_populates="jobs")
     assigned_printer: Optional[Printer] = Relationship(back_populates="jobs")
 
 class Product(SQLModel, table=True):

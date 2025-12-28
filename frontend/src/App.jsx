@@ -38,7 +38,7 @@ function App() {
 
   useEffect(() => {
     refreshPrinters();
-    const interval = setInterval(refreshPrinters, 2000);
+    const interval = setInterval(refreshPrinters, 3000);
     return () => clearInterval(interval);
   }, []);
 

@@ -15,8 +15,9 @@ except ImportError:
     sys.exit(1)
 
 from sqlmodel import select
-from database import async_session_maker
-from models import Order, PlatformEnum, OrderStatusEnum
+from app.core.database import async_session_maker
+from app.models.order import Order
+from app.models.core import PlatformEnum, OrderStatusEnum
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -119,8 +120,8 @@ async def process_orders(df: pd.DataFrame):
             platform_id = str(row['OrderID'])
             
             # Check if exists
-            result = await session.execute(select(Order).where(Order.platform_order_id == platform_id))
-            existing_order = result.scalars().first()
+            result = await session.exec(select(Order).where(Order.platform_order_id == platform_id))
+            existing_order = result.first()
             
             if existing_order:
                 # Optional: Update status?
@@ -131,16 +132,16 @@ async def process_orders(df: pd.DataFrame):
             # Parse Date
             try:
                 # ISO 8601 from eBay: 2024-12-25T10:00:00.000Z
-                purchase_date = pd.to_datetime(row['CreatedDate']).to_pydatetime()
+                created_at = pd.to_datetime(row['CreatedDate']).to_pydatetime()
             except:
-                purchase_date = datetime.now()
+                created_at = datetime.now()
 
             new_order = Order(
                 platform=PlatformEnum.EBAY,
                 platform_order_id=platform_id,
                 sku=row['SKU'],
                 quantity=int(row['Quantity']),
-                purchase_date=purchase_date,
+                created_at=created_at,
                 status=OrderStatusEnum.OPEN
             )
             

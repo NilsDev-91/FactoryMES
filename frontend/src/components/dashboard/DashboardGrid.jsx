@@ -11,9 +11,9 @@ const DashboardGrid = ({ initialPrinters = [] }) => {
     // Use SWR for data fetching with polling
     const { data: printers, error, isLoading } = useSWR('printers', fetcher, {
         fallbackData: initialPrinters,
-        refreshInterval: 2000,
+        refreshInterval: 3000,
         keepPreviousData: true,
-        revalidateOnFocus: false
+        revalidateOnFocus: true
     });
 
     const activeData = printers || [];

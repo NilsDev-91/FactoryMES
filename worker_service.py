@@ -8,8 +8,11 @@ from datetime import datetime
 from typing import Dict, Any
 
 from sqlmodel import select, col
-from database import async_session_maker
-from models import Printer, Job, JobStatusEnum, PrinterStatusEnum, Order, OrderStatusEnum, Product
+from sqlalchemy.orm import selectinload
+from app.core.database import async_session_maker
+from app.models.core import Printer, Job, JobStatusEnum, PrinterStatusEnum, Product, OrderStatusEnum
+from app.models.order import Order, OrderItem
+from app.models.filament import AmsSlot
 from bambu_client import BambuPrinterClient
 
 # Configure Logging
@@ -151,13 +154,13 @@ async def sync_loop():
                                 new_status = printer.current_status # default
 
                                 # Check for active job to protect UPLOADING state
-                                active_job_q = await session.execute(
+                                active_job_q = await session.exec(
                                     select(Job).where(
                                         Job.assigned_printer_serial == printer.serial,
                                         col(Job.status).in_([JobStatusEnum.PRINTING, JobStatusEnum.UPLOADING])
                                     )
                                 )
-                                active_job_for_update = active_job_q.scalars().first()
+                                active_job_for_update = active_job_q.first()
 
                                 if raw_status in ["IDLE", "FINISH", "FAILED"]:
                                     # Grace period: If job is UPLOADING, ignore IDLE
@@ -171,13 +174,13 @@ async def sync_loop():
                                 # Check for Completion Transition (PRINTING -> IDLE)
                                 if old_status == PrinterStatusEnum.PRINTING and new_status == PrinterStatusEnum.IDLE:
                                     logger.info(f"Printer {printer.serial} stopped printing (Status: {raw_status}). Checking for active job...")
-                                    active_job_result = await session.execute(
+                                    active_job_result = await session.exec(
                                         select(Job).where(
                                             Job.assigned_printer_serial == printer.serial,
                                             Job.status == JobStatusEnum.PRINTING
                                         )
                                     )
-                                    active_job = active_job_result.scalars().first()
+                                    active_job = active_job_result.first()
                                     
                                     if active_job:
                                         if raw_status == "FAILED":
@@ -233,78 +236,81 @@ async def sync_loop():
                 
                 # --- STEP 1.5: Create Jobs from OPEN Orders ---
                 # Check for OPEN orders that need processing
-                result = await session.execute(
+                result = await session.exec(
                     select(Order)
                     .where(Order.status == OrderStatusEnum.OPEN)
-                    .order_by(Order.purchase_date.asc())
+                    .options(selectinload(Order.items))
+                    .order_by(Order.id.asc())
                 )
-                open_orders = result.scalars().all()
+                open_orders = result.all()
                 
                 for order in open_orders:
-                    # Check if Job already exists (redundancy check)
-                    # Ideally we update Order status to avoid this, but let's be safe
-                    existing_job = await session.execute(select(Job).where(Job.order_id == order.id))
-                    if existing_job.scalars().first():
-                         # Just update status if needed
-                         if order.status == OrderStatusEnum.OPEN:
-                             order.status = OrderStatusEnum.QUEUED
-                             session.add(order)
-                         continue
-                         
-                    # Find Product
-                    product_result = await session.execute(select(Product).where(Product.sku == order.sku))
-                    product = product_result.scalars().first()
-                    
-                    if product:
-                        logger.info(f"Creating Job for Order {order.id} (SKU: {order.sku})")
-                        new_job = Job(
-                            order_id=order.id,
-                            gcode_path=product.file_path_3mf,
-                            status=JobStatusEnum.PENDING,
-                            created_at=datetime.now()
-                        )
-                        session.add(new_job)
+                    # Iterate over items in the order
+                    for item in order.items:
+                        # Check if Job already exists for this order item?
+                        # Since we don't have item_id in Job yet, let's just check if ANY job exists for this order for now, 
+                        # or better, check if we've already processed this order.
+                        # For now, let's keep it simple: one job per item.
                         
-                        # Mark Order as QUEUED (Waiting for printer)
-                        order.status = OrderStatusEnum.QUEUED
-                        session.add(order)
-                    else:
-                        logger.error(f"Cannot create Job for Order {order.id}: Product SKU {order.sku} not found. Marking as DONE (Invalid).")
-                        order.status = OrderStatusEnum.DONE
-                        session.add(order)
+                        # Find Product
+                        product_result = await session.exec(select(Product).where(Product.sku == item.sku))
+                        product = product_result.first()
+                        
+                        if product:
+                            logger.info(f"Creating Job for Order {order.id} Item {item.id} (SKU: {item.sku})")
+                            new_job = Job(
+                                order_id=order.id,
+                                gcode_path=product.file_path_3mf,
+                                status=JobStatusEnum.PENDING,
+                                created_at=datetime.now()
+                            )
+                            session.add(new_job)
+                        else:
+                            logger.error(f"Cannot create Job for Order {order.id} Item {item.id}: Product SKU {item.sku} not found.")
+                    
+                    # Mark Order as QUEUED (Waiting for printer)
+                    order.status = "QUEUED" # Using string as requested by user for status
+                    session.add(order)
 
                 
                 await session.commit()
 
                 # --- STEP 2: Job Matching ---
                 # Find IDLE printers
-                result = await session.execute(
+                result = await session.exec(
                     select(Printer).where(Printer.current_status == PrinterStatusEnum.IDLE)
                 )
-                idle_printers = result.scalars().all()
+                idle_printers = result.all()
                 
                 if idle_printers:
                     # Check for waiting Jobs
-                    result = await session.execute(
+                    result = await session.exec(
                         select(Job)
                         .where(Job.status == JobStatusEnum.PENDING)
-                        .order_by(Job.created_at.asc())
+                        .order_by(Job.id.asc())
                     )
-                    pending_jobs = result.scalars().all()
+                    pending_jobs = result.all()
                     
                     for job in pending_jobs:
                         if not idle_printers:
                             break
                         
                         # Get Order to find SKU -> Product Requirements
-                        order = await session.get(Order, job.order_id)
+                        order = await session.get(Order, job.order_id, options=[selectinload(Order.items)])
                         if not order:
                             logger.error(f"Job {job.id} has invalid order {job.order_id}")
                             continue
 
-                        # Find Product by SKU
-                        result = await session.execute(select(Product).where(Product.sku == order.sku))
-                        product = result.scalars().first()
+                        # Find Product by looking at the first item of the order
+                        # (Simplification: Jobs are created per item, but Job.order_id is shared)
+                        # We might need to link Job to OrderItem later.
+                        if not order.items:
+                             logger.error(f"Order {order.id} has no items. Skipping.")
+                             continue
+                        
+                        first_item = order.items[0]
+                        result = await session.exec(select(Product).where(Product.sku == first_item.sku))
+                        product = result.first()
                         
                         # Find a compatible printer among idle ones
                         compatible_printer = None
@@ -425,8 +431,8 @@ async def main():
     # 1. Load Printers from DB
     clients = []
     async with async_session_maker() as session:
-        result = await session.execute(select(Printer))
-        printers = result.scalars().all()
+        result = await session.exec(select(Printer))
+        printers = result.all()
         
         if not printers:
             logger.warning("No printers found in database. Please run init_db.py or add printers.")

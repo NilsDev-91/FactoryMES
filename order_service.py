@@ -4,8 +4,9 @@ import random
 import uuid
 from datetime import datetime
 from sqlmodel import select, func
-from database import async_session_maker
-from models import Order, Product, OrderStatusEnum, PlatformEnum
+from app.core.database import async_session_maker
+from app.models.core import Product, OrderStatusEnum, PlatformEnum
+from app.models.order import Order
 
 # Configure Logging
 logging.basicConfig(
@@ -18,8 +19,8 @@ async def create_dummy_order():
     """Creates a random order for testing purposes"""
     async with async_session_maker() as session:
         # Get all products
-        result = await session.execute(select(Product))
-        products = result.scalars().all()
+        result = await session.exec(select(Product))
+        products = result.all()
         
         if not products:
             logger.warning("No products in DB. Cannot create dummy order.")
@@ -36,7 +37,7 @@ async def create_dummy_order():
             sku=product.sku,
             quantity=1,
             status=status,
-            purchase_date=datetime.now()
+            created_at=datetime.now()
         )
         
         session.add(new_order)
@@ -55,8 +56,8 @@ async def run_service_loop():
                 # Count queries in SQLModel/SQLAlchemy Async
                 # method 1: execute(select(func.count())...).scalar()
                 
-                result = await session.execute(select(func.count()).select_from(Order).where(Order.status == OrderStatusEnum.OPEN))
-                pending_count = result.scalar()
+                result = await session.exec(select(func.count()).select_from(Order).where(Order.status == OrderStatusEnum.OPEN))
+                pending_count = result.one()
                 
                 if pending_count < 5:
                     # await create_dummy_order()
