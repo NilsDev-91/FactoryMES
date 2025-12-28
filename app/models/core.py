@@ -71,6 +71,10 @@ class Job(SQLModel, table=True):
     gcode_path: str
     status: JobStatusEnum = Field(default=JobStatusEnum.PENDING)
     error_message: Optional[str] = None
+    
+    # Requirements derived from Product/Variation
+    filament_requirements: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    
     created_at: datetime = Field(default_factory=datetime.now)
 
     order: Optional["Order"] = Relationship(back_populates="jobs")

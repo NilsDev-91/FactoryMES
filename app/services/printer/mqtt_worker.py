@@ -5,7 +5,7 @@ import logging
 import ssl
 import time
 from typing import Dict, Any, Optional
-from gmqtt import Client as MQTTClient
+from gmqtt import Client as MQTTClient, constants
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -60,7 +60,7 @@ class PrinterMqttWorker:
         while True:
             try:
                 logger.info(f"Connecting to {serial} at {ip}...")
-                await client.connect(ip, 8883, ssl=context)
+                await client.connect(ip, 8883, ssl=context, version=constants.MQTTv311)
                 
                 # Keep alive until disconnect
                 # gmqtt client needs to be awaited or run in loop?

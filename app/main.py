@@ -12,6 +12,7 @@ from app.routers import system, printers, products, orders, ebay, auth
 from app.services.printer.mqtt_worker import PrinterMqttWorker
 # NEU: Importiere die Dispatcher Klasse
 from app.services.production.dispatcher import ProductionDispatcher 
+from app.services.production.order_processor import order_processor 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +34,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("Database unreachable") from e
     
     # 2. Start MQTT Workers (The Ears)
-    mqtt_worker = PrinterMqttWorker(settings)
+    mqtt_worker = PrinterMqttWorker()
     app.state.mqtt_tasks = {}
     
     async with async_session_maker() as session:
@@ -54,7 +55,13 @@ async def lifespan(app: FastAPI):
     app.state.dispatcher = dispatcher
     # Startet die Endlosschleife im Hintergrund
     app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
+    app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
     logger.info("🧠 Production Dispatcher Loop started.")
+
+    # 4. Start eBay Order Processor
+    app.state.order_processor = order_processor
+    app.state.order_processor_task = asyncio.create_task(order_processor.start_loop())
+    logger.info("📦 eBay Order Processor Loop started.")
 
     yield
     
@@ -66,6 +73,12 @@ async def lifespan(app: FastAPI):
         await app.state.dispatcher.stop()
     if hasattr(app.state, "dispatcher_task"):
         app.state.dispatcher_task.cancel()
+
+    # Stop Order Processor
+    if hasattr(app.state, "order_processor"):
+        app.state.order_processor.running = False
+    if hasattr(app.state, "order_processor_task"):
+        app.state.order_processor_task.cancel()
         
     # Stop MQTT
     if hasattr(app.state, "mqtt_tasks"):

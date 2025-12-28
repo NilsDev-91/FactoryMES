@@ -18,6 +18,13 @@ async def get_products(session: AsyncSession = Depends(get_session)):
     result = await session.execute(select(Product))
     return result.scalars().all()
 
+@router.get("/{id}", response_model=Product)
+async def get_product(id: int, session: AsyncSession = Depends(get_session)):
+    product = await session.get(Product, id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
 @router.post("", response_model=Product)
 async def create_product(product: Product, session: AsyncSession = Depends(get_session)):
     # 1. Validate File Path exists

@@ -48,10 +48,9 @@ class EbayAuthManager:
 
     async def _refresh_token(self):
         """
-        Calls eBay OAuth endpoint to get a new Client Credentials token.
+        Refreshes the access token using the Refresh Token (User Access Token) if available,
+        otherwise falls back to Client Credentials (Application Token).
         """
-        logger.info("Refreshing eBay access token...")
-        
         # Prepare Basic Auth header: Base64(AppID:CertID)
         auth_str = f"{settings.EBAY_APP_ID}:{settings.EBAY_CERT_ID}"
         b64_auth = base64.b64encode(auth_str.encode()).decode()
@@ -61,14 +60,22 @@ class EbayAuthManager:
             "Authorization": f"Basic {b64_auth}"
         }
         
-        # Body for Client Credentials Grant
-        # Note: Scope is required by eBay for most operations.
-        data = {
-            "grant_type": "client_credentials",
-            "scope": "https://api.ebay.com/oauth/api_scope"
-        }
-        
         token_url = f"{settings.EBAY_API_BASE_URL}/identity/v1/oauth2/token"
+        data = {}
+
+        if settings.EBAY_REFRESH_TOKEN:
+            logger.info("Refreshing eBay User Access Token (Authorization Code Flow)...")
+            data = {
+                "grant_type": "refresh_token",
+                "refresh_token": settings.EBAY_REFRESH_TOKEN,
+                # Scope is optional for refresh_token grant, usually inherits from original
+            }
+        else:
+            logger.warning("No EBAY_REFRESH_TOKEN found. Falling back to Client Credentials (limited access).")
+            data = {
+                "grant_type": "client_credentials",
+                "scope": "https://api.ebay.com/oauth/api_scope"
+            }
         
         async with httpx.AsyncClient() as client:
             try:

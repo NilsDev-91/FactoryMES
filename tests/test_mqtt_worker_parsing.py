@@ -12,7 +12,7 @@ from app.services.printer.mqtt_worker import PrinterMqttWorker
 from app.models.core import PrinterStatusEnum, Printer
 
 async def test_message_parsing():
-    worker = PrinterMqttWorker(settings=None)
+    worker = PrinterMqttWorker()
     
     # Mock payload from Bambu Lab printer
     payload_data = {
@@ -37,12 +37,19 @@ async def test_message_parsing():
         mock_session = AsyncMock()
         mock_maker.return_value.__aenter__.return_value = mock_session
         
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_printer
-        mock_session.execute.return_value = mock_result
+        # Mock session.get to return our printer
+        mock_session.get.return_value = mock_printer
+        
+        # Mock session.add to be synchronous (MagicMock)
+        mock_session.add = MagicMock()
+
+        # Remove incorrect execute mock
+        # mock_result = MagicMock()
+        # mock_result.scalar_one_or_none.return_value = mock_printer
+        # mock_session.execute.return_value = mock_result
         
         # Call the message handler
-        await worker._handle_message("TEST001", payload)
+        await worker._handle_message("TEST001", payload_data)
         
         # Assertions
         assert mock_printer.current_temp_nozzle == 210.5

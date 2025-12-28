@@ -1,29 +1,73 @@
 
 'use client';
 
-import React from 'react';
+import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
-import { Package, Plus, FileText, Settings, Trash2, Loader2, AlertTriangle } from 'lucide-react';
-
-// Product Interface Matching Backend
-export interface Product {
-    id: number;
-    name: string;
-    sku: string;
-    description?: string;
-    file_path_3mf?: string;
-    required_filament_type?: string;
-    required_filament_color?: string; // Hex
-}
+import { Package, Plus, AlertTriangle, Loader2, FileText, Settings, Trash2 } from 'lucide-react';
+import { ConfirmationModal } from '@/components/modals/ConfirmationModal';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
+interface Product {
+    id: number;
+    name: string;
+    description: string | null;
+    sku: string;
+    created_at: string;
+    updated_at: string;
+    file_path_3mf: string | null;
+    required_filament_type: string | null;
+    required_filament_color: string | null;
+}
+
 export default function ProductsPage() {
-    const { data: products, error, isLoading } = useSWR<Product[]>('http://localhost:8000/api/products', fetcher);
+    const { data: products, error, isLoading, mutate } = useSWR<Product[]>('http://localhost:8000/api/products', fetcher);
+
+    // Modal State
+    const [deleteId, setDeleteId] = useState<number | null>(null);
+    const [deleteName, setDeleteName] = useState<string>('');
+    const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+
+    const promptDelete = (id: number, name: string) => {
+        setDeleteId(id);
+        setDeleteName(name);
+        setIsDeleteModalOpen(true);
+    };
+
+    const handleConfirmDelete = async () => {
+        if (!deleteId) return;
+
+        try {
+            const res = await fetch(`http://localhost:8000/api/products/${deleteId}`, {
+                method: 'DELETE',
+            });
+
+            if (!res.ok) throw new Error('Failed to delete product');
+
+            // Optimistic update
+            mutate(products?.filter(p => p.id !== deleteId), false);
+            mutate(); // Re-fetch
+
+            setIsDeleteModalOpen(false);
+        } catch (err) {
+            alert('Error deleting product'); // Fallback alert for error is fine for now
+            console.error(err);
+        }
+    };
 
     return (
         <div className="space-y-6 max-w-[1600px] mx-auto">
+            <ConfirmationModal
+                isOpen={isDeleteModalOpen}
+                title="Delete Product?"
+                message={`Are you sure you want to delete "${deleteName}"? This action cannot be undone and will prevent future orders for this SKU.`}
+                confirmLabel="Delete Product"
+                isDestructive={true}
+                onConfirm={handleConfirmDelete}
+                onCancel={() => setIsDeleteModalOpen(false)}
+            />
+
             {/* Header */}
             <div className="flex justify-between items-center bg-slate-900/50 p-6 rounded-2xl border border-slate-800">
                 <div className="flex items-center gap-4">
@@ -122,11 +166,14 @@ export default function ProductsPage() {
                                         )}
                                     </td>
                                     <td className="p-6 text-right">
-                                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-all">
+                                        <div className="flex justify-end gap-2 transition-opacity">
+                                            <Link href={`/products/${product.id}`} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-all">
                                                 <Settings size={18} />
-                                            </button>
-                                            <button className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all">
+                                            </Link>
+                                            <button
+                                                onClick={() => promptDelete(product.id, product.name)}
+                                                className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
+                                            >
                                                 <Trash2 size={18} />
                                             </button>
                                         </div>

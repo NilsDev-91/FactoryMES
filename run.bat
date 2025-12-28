@@ -21,6 +21,29 @@ if %errorlevel% neq 0 (
 echo [OK] Docker is running.
 
 REM ====================================================
+REM 0. SAFETY CHECKS
+REM ====================================================
+echo [PRE-FLIGHT] Checking Safety...
+
+if not exist ".env" (
+    color 4F
+    echo [ERROR] .env file not found!
+    echo Please create one based on .env.example or configuration guide.
+    pause
+    exit /b 1
+)
+
+if not exist ".venv\Scripts\activate.bat" (
+    echo [INFO] Virtual Environment not found. Creating one...
+    python -m venv .venv
+    echo [INFO] Activating and installing dependencies...
+    call .venv\Scripts\activate.bat
+    pip install -r requirements.txt
+) else (
+    echo [OK] Virtual Environment found.
+)
+
+REM ====================================================
 REM 1. START DATABASE
 REM ====================================================
 echo.
@@ -40,8 +63,7 @@ REM 2. START BACKEND (New Window)
 REM ====================================================
 echo.
 echo [2/3] Launching Backend API...
-REM Using python -m uvicorn because uvicorn.exe might not be in PATH
-start "FactoryOS Backend" cmd /k "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+start "FactoryOS Backend" cmd /k "call .venv\Scripts\activate.bat && python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
 
 REM ====================================================
 REM 3. START FRONTEND (New Window)
@@ -49,7 +71,10 @@ REM ====================================================
 echo.
 echo [3/3] Launching Frontend Dashboard...
 cd frontend
-REM Check if node_modules exists, if not, warn or install (optional, keeping it simple as per req)
+if not exist "node_modules" (
+    echo [INFO] node_modules not found. Installing dependencies...
+    cmd /c "npm install"
+)
 start "FactoryOS Frontend" cmd /k "npm run dev"
 cd ..
 

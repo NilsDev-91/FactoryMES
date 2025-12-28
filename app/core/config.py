@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     EBAY_APP_ID: str | None = None
     EBAY_CERT_ID: str | None = None
     EBAY_RU_NAME: str | None = None
+    EBAY_REFRESH_TOKEN: str | None = None
     
     # eBay Environment Toggle
     EBAY_API_ENV: Literal["SANDBOX", "PRODUCTION"] = "SANDBOX"
