@@ -22,7 +22,7 @@ interface Product {
 }
 
 export default function ProductsPage() {
-    const { data: products, error, isLoading, mutate } = useSWR<Product[]>('http://localhost:8000/api/products', fetcher);
+    const { data: products, error, isLoading, mutate } = useSWR<Product[]>('http://127.0.0.1:8000/api/products', fetcher);
 
     // Modal State
     const [deleteId, setDeleteId] = useState<number | null>(null);
@@ -39,7 +39,7 @@ export default function ProductsPage() {
         if (!deleteId) return;
 
         try {
-            const res = await fetch(`http://localhost:8000/api/products/${deleteId}`, {
+            const res = await fetch(`http://127.0.0.1:8000/api/products/${deleteId}`, {
                 method: 'DELETE',
             });
 
@@ -131,11 +131,33 @@ export default function ProductsPage() {
                                 <tr key={product.id} className="hover:bg-slate-800/40 transition-colors group">
                                     <td className="p-6 font-mono text-slate-500">#{product.id}</td>
                                     <td className="p-6">
-                                        <div className="font-bold text-white text-lg">{product.name}</div>
-                                        <div className="text-sm font-mono text-blue-400 mt-1">{product.sku}</div>
-                                        {product.description && (
-                                            <p className="text-xs text-slate-500 mt-1 max-w-sm truncate">{product.description}</p>
-                                        )}
+                                        <div className="flex items-center gap-6">
+                                            {/* Thumbnail */}
+                                            <div className="w-20 h-20 rounded-lg bg-slate-800 border border-slate-700 overflow-hidden shrink-0 flex items-center justify-center relative shadow-sm">
+                                                <img
+                                                    src={`http://127.0.0.1:8000/api/products/${product.id}/thumbnail`}
+                                                    alt={product.name}
+                                                    className="w-full h-full object-cover"
+                                                    onError={(e) => {
+                                                        const target = e.target as HTMLImageElement;
+                                                        target.style.display = 'none'; // Hide broken image
+                                                        target.nextElementSibling?.classList.remove('hidden'); // Show fallback
+                                                    }}
+                                                />
+                                                <div className="hidden absolute inset-0 flex items-center justify-center bg-slate-800">
+                                                    <Package size={24} className="text-slate-600" />
+                                                </div>
+                                            </div>
+
+                                            {/* Text Content */}
+                                            <div>
+                                                <div className="font-bold text-white text-xl tracking-tight">{product.name}</div>
+                                                <div className="text-sm font-mono text-blue-400 mt-1">{product.sku}</div>
+                                                {product.description && (
+                                                    <p className="text-xs text-slate-500 mt-2 max-w-sm leading-relaxed truncate">{product.description}</p>
+                                                )}
+                                            </div>
+                                        </div>
                                     </td>
                                     <td className="p-6">
                                         <div className="flex gap-2">
@@ -157,12 +179,17 @@ export default function ProductsPage() {
                                     </td>
                                     <td className="p-6">
                                         {product.file_path_3mf ? (
-                                            <div className="flex items-center gap-2 text-green-400 text-xs font-mono bg-green-500/10 px-3 py-1.5 rounded-full w-fit">
-                                                <FileText size={12} />
-                                                Possible
+                                            <div className="flex items-center gap-2 text-emerald-400 text-xs font-mono bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-md w-fit max-w-[200px]">
+                                                <FileText size={14} className="shrink-0" />
+                                                <span className="truncate" title={product.file_path_3mf}>
+                                                    {product.file_path_3mf.split('/').pop()}
+                                                </span>
                                             </div>
                                         ) : (
-                                            <span className="text-slate-600 text-xs italic">Missing File</span>
+                                            <div className="flex items-center gap-2 text-slate-500 text-xs font-mono bg-slate-500/10 border border-slate-500/20 px-3 py-1.5 rounded-md w-fit">
+                                                <AlertTriangle size={14} />
+                                                Missing Source
+                                            </div>
                                         )}
                                     </td>
                                     <td className="p-6 text-right">

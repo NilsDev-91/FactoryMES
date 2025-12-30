@@ -6,15 +6,18 @@ import { useRouter } from 'next/navigation';
 import { Package, Upload, FileText, CheckCircle2, X, AlertTriangle, ArrowLeft, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
+import { fetchAvailableMaterials, MaterialAvailability } from '@/lib/api/fms';
+
 export default function CreateProductPage() {
     const router = useRouter();
 
     // Form State
     const [name, setName] = useState('');
-    const [sku, setSku] = useState('');
     const [description, setDescription] = useState('');
-    const [material, setMaterial] = useState('PLA');
-    const [colorHex, setColorHex] = useState('#ffffff');
+
+    // FMS Data
+    const [availableMaterials, setAvailableMaterials] = useState<MaterialAvailability[]>([]);
+    const [selectedMaterials, setSelectedMaterials] = useState<Set<string>>(new Set()); // Set of "Material|Hex" keys
 
     // File State
     const [file, setFile] = useState<File | null>(null);
@@ -23,6 +26,24 @@ export default function CreateProductPage() {
     // Submission State
     const [status, setStatus] = useState<'idle' | 'uploading' | 'creating' | 'success' | 'error'>('idle');
     const [errorMessage, setErrorMessage] = useState('');
+
+    // Load FMS Data
+    React.useEffect(() => {
+        fetchAvailableMaterials()
+            .then(setAvailableMaterials)
+            .catch(console.error);
+    }, []);
+
+    const toggleMaterial = (mat: MaterialAvailability) => {
+        const key = `${mat.material}|${mat.hex_code}`;
+        const next = new Set(selectedMaterials);
+        if (next.has(key)) {
+            next.delete(key);
+        } else {
+            next.add(key);
+        }
+        setSelectedMaterials(next);
+    };
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
@@ -57,39 +78,56 @@ export default function CreateProductPage() {
             return;
         }
 
+        if (selectedMaterials.size === 0) {
+            setErrorMessage("Please select at least one material variant.");
+            setStatus('error');
+            return;
+        }
+
         try {
             // Step 1: Upload File
             setStatus('uploading');
             const formData = new FormData();
             formData.append('file', file);
 
-            const uploadRes = await fetch('http://localhost:8000/api/products/upload', {
+            const uploadRes = await fetch('http://127.0.0.1:8000/api/products/upload', {
                 method: 'POST',
                 body: formData,
             });
 
             if (!uploadRes.ok) throw new Error('File upload failed');
             const uploadData = await uploadRes.json();
-            const filePath = uploadData.file_path; // Assuming backend returns { "file_path": "..." }
+            const filePath = uploadData.file_path;
 
-            // Step 2: Create Product
+            // Step 2: Create Product with Variants
             setStatus('creating');
+
+            // Transform Selection to Variants
+            const allowed_variants = Array.from(selectedMaterials).map(key => {
+                const [mat, hex] = key.split('|');
+                const original = availableMaterials.find(m => m.material === mat && m.hex_code === hex);
+                return {
+                    hex_code: hex,
+                    color_name: original?.color_name || 'Unknown'
+                };
+            });
+
             const productPayload = {
                 name,
-                sku,
-                description,
-                required_filament_type: material,
-                required_filament_color: colorHex, // e.g. "#FF0000"
-                file_path_3mf: filePath
+                filename_3mf: filePath,
+                allowed_variants
             };
 
-            const createRes = await fetch('http://localhost:8000/api/products', {
+            const createRes = await fetch('http://127.0.0.1:8000/api/products/create-with-variants', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(productPayload),
             });
 
-            if (!createRes.ok) throw new Error('Failed to create product definition');
+            if (!createRes.ok) {
+                const err = await createRes.json();
+                throw new Error(err.detail || 'Failed to create product');
+            }
 
             setStatus('success');
 
@@ -131,28 +169,16 @@ export default function CreateProductPage() {
                     </div>
                 ) : (
                     <form onSubmit={handleSubmit} className="space-y-6">
-                        {/* SKU & Name */}
-                        <div className="grid grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">SKU</label>
-                                <input
-                                    required
-                                    placeholder="e.g. VASE-V2-RED"
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white font-mono focus:border-blue-500 focus:outline-none transition-colors"
-                                    value={sku}
-                                    onChange={(e) => setSku(e.target.value.toUpperCase())}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Product Name</label>
-                                <input
-                                    required
-                                    placeholder="e.g. Geometric Vase 2.0"
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:outline-none transition-colors"
-                                    value={name}
-                                    onChange={(e) => setName(e.target.value)}
-                                />
-                            </div>
+                        {/* Name and Basic Info */}
+                        <div className="space-y-2">
+                            <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Product Name</label>
+                            <input
+                                required
+                                placeholder="e.g. Geometric Vase 2.0"
+                                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:outline-none transition-colors"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                            />
                         </div>
 
                         {/* Description */}
@@ -166,42 +192,62 @@ export default function CreateProductPage() {
                             />
                         </div>
 
-                        {/* Material Requirements */}
-                        <div className="grid grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Material</label>
-                                <select
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:outline-none transition-colors appearance-none"
-                                    value={material}
-                                    onChange={(e) => setMaterial(e.target.value)}
-                                >
-                                    <option value="PLA">PLA</option>
-                                    <option value="PETG">PETG</option>
-                                    <option value="ABS">ABS</option>
-                                    <option value="ASA">ASA</option>
-                                    <option value="TPU">TPU</option>
-                                </select>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Color</label>
-                                <div className="flex gap-3">
-                                    <div className="relative w-12 h-[46px] rounded-lg overflow-hidden border border-slate-800 shrink-0">
-                                        <input
-                                            type="color"
-                                            className="absolute -top-2 -left-2 w-16 h-16 cursor-pointer"
-                                            value={colorHex}
-                                            onChange={(e) => setColorHex(e.target.value)}
-                                        />
-                                    </div>
-                                    <input
-                                        type="text"
-                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white font-mono focus:border-blue-500 focus:outline-none transition-colors uppercase"
-                                        value={colorHex}
-                                        onChange={(e) => setColorHex(e.target.value)}
-                                        maxLength={7}
-                                    />
+                        {/* Material variants Selection (FMS) */}
+                        <div className="space-y-4">
+                            <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">
+                                Allowed Variants (Available in Farm)
+                            </label>
+
+                            {availableMaterials.length === 0 ? (
+                                <div className="p-4 bg-slate-950 rounded-lg text-slate-500 text-sm text-center border border-slate-800 border-dashed">
+                                    No filaments detected in AMS units.
                                 </div>
-                            </div>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-3 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
+                                    {availableMaterials.map((mat) => {
+                                        const key = `${mat.material}|${mat.hex_code}`;
+                                        const isSelected = selectedMaterials.has(key);
+
+                                        return (
+                                            <div
+                                                key={key}
+                                                onClick={() => toggleMaterial(mat)}
+                                                className={`
+                                                    cursor-pointer p-3 rounded-xl border flex items-center justify-between transition-all select-none
+                                                    ${isSelected
+                                                        ? 'bg-blue-500/10 border-blue-500 shadow-sm shadow-blue-500/10'
+                                                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                                                    }
+                                                `}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    {/* Color Circle */}
+                                                    <div
+                                                        className="w-8 h-8 rounded-full shadow-inner border border-white/10"
+                                                        style={{ backgroundColor: mat.hex_code.startsWith('#') ? mat.hex_code : `#${mat.hex_code}` }}
+                                                    />
+                                                    <div className="flex flex-col">
+                                                        <span className="text-white font-bold text-sm tracking-tight">{mat.material}</span>
+                                                        <span className="text-xs text-slate-500">{mat.hex_code}</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Checkbox Visual */}
+                                                <div className={`
+                                                    w-5 h-5 rounded-full border flex items-center justify-center transition-colors
+                                                    ${isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-700'}
+                                                `}>
+                                                    {isSelected && <CheckCircle2 size={12} className="text-white" />}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+
+                            <p className="text-[10px] text-slate-500">
+                                Selected variants will generate unique SKUs (e.g. {name ? name.toUpperCase().replace(/\s/g, '_') : 'PRODUCT'}_COLOR).
+                            </p>
                         </div>
 
                         {/* File Upload */}

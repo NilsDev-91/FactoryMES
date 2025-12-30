@@ -11,8 +11,9 @@ const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export default function OrdersPage() {
     // Poll every 5 seconds
+
     const { data: orders, error, isLoading, mutate } = useSWR<Order[]>(
-        'http://localhost:8000/api/orders',
+        'http://127.0.0.1:8000/api/orders',
         fetcher,
         { refreshInterval: 5000 }
     );

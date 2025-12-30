@@ -10,13 +10,17 @@ export const AddPrinterCard: React.FC<AddPrinterCardProps> = ({ onClick }) => {
     return (
         <div
             onClick={onClick}
-            className="group relative flex flex-col items-center justify-center p-6 h-full min-h-[220px] rounded-2xl border-2 border-dashed border-slate-700 hover:border-blue-500 bg-slate-900/20 hover:bg-slate-900/50 cursor-pointer transition-all duration-300"
+            className="group relative flex flex-col items-center justify-center p-6 h-full min-h-[150px] rounded-xl border border-dashed border-slate-700 hover:border-blue-500 bg-slate-900/20 hover:bg-slate-900/50 cursor-pointer transition-all duration-300"
         >
-            <div className="p-4 rounded-full bg-slate-800 group-hover:bg-blue-600 transition-colors shadow-lg group-hover:shadow-blue-500/30">
-                <Plus className="text-slate-400 group-hover:text-white transition-colors" size={32} />
+            <div className="flex flex-col items-center gap-2">
+                <div className="p-2 rounded-full bg-slate-800 group-hover:bg-blue-600 transition-colors shadow-lg group-hover:shadow-blue-500/30">
+                    <Plus className="text-slate-400 group-hover:text-white transition-colors" size={20} />
+                </div>
+                <div className="text-center">
+                    <h3 className="text-slate-400 group-hover:text-white font-bold text-sm transition-colors uppercase tracking-wide">Add Device</h3>
+                    <p className="text-[10px] text-slate-600 group-hover:text-slate-400">Connect new hardware</p>
+                </div>
             </div>
-            <h3 className="mt-4 text-slate-400 group-hover:text-white font-bold text-lg transition-colors">Add Device</h3>
-            <p className="text-xs text-slate-600 group-hover:text-slate-400 mt-1">Connect new hardware</p>
         </div>
     );
 };

@@ -33,3 +33,14 @@ class PrinterCreate(BaseModel):
     ip_address: str
     access_code: str
     type: PrinterTypeEnum
+
+class PrinterUpdate(BaseModel):
+    name: Optional[str] = None
+    ip_address: Optional[str] = None
+    access_code: Optional[str] = None
+    type: Optional[PrinterTypeEnum] = None
+    current_status: Optional[PrinterStatusEnum] = None
+    current_temp_nozzle: Optional[float] = None
+    current_temp_bed: Optional[float] = None
+    current_progress: Optional[int] = None
+

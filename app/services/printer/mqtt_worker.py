@@ -19,7 +19,7 @@ logger = logging.getLogger("PrinterMqttWorker")
 GCODE_STATE_MAP = {
     "IDLE": PrinterStatusEnum.IDLE,
     "RUNNING": PrinterStatusEnum.PRINTING,
-    "FINISH": PrinterStatusEnum.IDLE, # Finish is technically IDLE but we might want to flag it?
+    "FINISH": PrinterStatusEnum.AWAITING_CLEARANCE, # Manual Clearance Protocol
     "PAUSE": PrinterStatusEnum.IDLE, # Or handle as separate status
     "OFFLINE": PrinterStatusEnum.OFFLINE
 }
@@ -130,6 +130,9 @@ class PrinterMqttWorker:
         if new_status and old_status != new_status:
             should_sync = True
             logger.info(f"Status change detected for {serial}: {old_status} -> {new_status}")
+            
+            if new_status == "FINISH":
+                 logger.warning(f"Print finished on {serial}. Locking printer until manual clearance.")
         
         # Check Time
         if (now - last_sync) > 5.0:

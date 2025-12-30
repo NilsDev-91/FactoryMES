@@ -1,10 +1,10 @@
 
 import React, { useState } from 'react';
-import { Settings, Clock, Trash2, AlertTriangle, Loader2, AlertCircle } from 'lucide-react';
+import { Settings, Clock, Trash2, AlertTriangle, Loader2 } from 'lucide-react';
 import { mutate } from 'swr';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { Printer, AmsSlot } from '../../types/printer';
+import { Printer } from '../../types/printer';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
@@ -22,24 +22,48 @@ export interface PrinterCardProps {
 export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [isClearing, setIsClearing] = useState(false);
 
     const handleDelete = async (e: React.MouseEvent) => {
         e.stopPropagation();
         setIsDeleting(true);
         try {
-            const res = await fetch(`http://localhost:8000/api/printers/${printer.serial}`, {
+            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}`, {
                 method: 'DELETE'
             });
             if (!res.ok) throw new Error('Failed to delete');
-            mutate('http://localhost:8000/api/printers');
+            mutate('http://127.0.0.1:8000/api/printers');
         } catch (error) {
             alert('Failed to delete printer');
             setIsDeleting(false);
         }
     };
+
+    const handleClearance = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setIsClearing(true);
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}/confirm-clearance`, {
+                method: 'POST'
+            });
+            if (!res.ok) throw new Error('Failed to confirm clearance');
+            mutate('http://127.0.0.1:8000/api/printers');
+        } catch (error) {
+            alert('Failed to confirm clearance');
+        } finally {
+            setIsClearing(false);
+        }
+    };
+
     // Standardize status
     const status = (printer.current_status || 'idle').toLowerCase();
-    const progress = printer.current_progress || 0;
+    const isPrinting = status === 'printing';
+    const isAwaitingClearance = status === 'awaiting_clearance';
+
+    // Progress logic: Printing uses actual, Clearance forces 100%
+    const progress = isAwaitingClearance ? 100 : (printer.current_progress || 0);
+    const showProgressBar = isPrinting || isAwaitingClearance;
+
     const timeLeft = printer.remaining_time ? `${printer.remaining_time}m` : null;
 
     // Strict color mapping per requirements
@@ -73,6 +97,12 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
             text: 'text-slate-500',
             bg: 'bg-slate-800',
             progress: 'bg-slate-700',
+        },
+        awaiting_clearance: {
+            border: 'border-emerald-500',
+            text: 'text-emerald-500',
+            bg: 'bg-emerald-500/10',
+            progress: 'bg-emerald-500',
         }
     };
 
@@ -80,27 +110,23 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
 
     // Clean Alpha from Hex if present (e.g. FF0000FF -> #FF0000)
     const formatColor = (color: string | undefined) => {
-        if (!color) return undefined;
-        let hex = color.startsWith('#') ? color : `#${color}`;
-        if (hex.length > 7) hex = hex.substring(0, 7);
-        return hex;
+        if (!color) return '#334155'; // Fallback
+        let hex = color.replace('#', '');
+        if (hex.length === 8) hex = hex.substring(0, 6);
+        return `#${hex}`;
     };
 
     // Prepare AMS Slots (Guarantee 4 slots for visualization)
-    // Backend might return [], [slot0, slot2], etc.
-    // We map purely by visual index 0-3
     const slots = printer.ams_slots || printer.ams_inventory || [];
     const amsDisplay = [0, 1, 2, 3].map(idx => {
-        // Find slot with this matching index
-        // Prioritize slot matching global index logic if needed, 
-        // but simple 0-3 match is safer for single AMS.
-        return slots.find(s => s.slot_index === idx) || null;
+        return slots.find(s => s.slot_index === idx) || { tray_color: undefined, tray_type: 'Empty', color_name: 'Empty' };
     });
 
     return (
         <div className={cn(
-            "group relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all hover:border-slate-700 h-[140px]",
-            "flex flex-col select-none"
+            "group relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all hover:border-slate-700 h-[150px]",
+            "flex flex-col select-none",
+            isAwaitingClearance && "border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/20"
         )}>
             {/* Delete Confirmation Overlay */}
             {showDeleteConfirm && (
@@ -142,7 +168,8 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                         </div>
                     </div>
 
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Action Buttons - Always Visible (no opacity classes) */}
+                    <div className="flex gap-1">
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -165,85 +192,63 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                     </div>
                 </div>
 
-                {/* AMS Slots Visual - Centerpiece */}
+                {/* AMS Slots Visual - Simple Circular Divs */}
                 <div className="flex items-center gap-2 my-1">
                     <span className="text-[9px] text-slate-600 font-bold tracking-wider">AMS</span>
                     <div className="flex items-center gap-1.5 bg-slate-950/50 px-2 py-1 rounded-full border border-slate-800">
-                        {amsDisplay.map((slot, idx) => {
-                            const color = formatColor(slot?.tray_color);
-                            const isEmpty = !slot || !color;
-                            const isLow = (slot?.remaining_percent || 0) < 10 && !isEmpty;
-
-                            return (
-                                <div key={idx} className="relative group/slot">
-                                    {/* Spool Circle */}
-                                    <div
-                                        className={cn(
-                                            "w-5 h-5 rounded-full border shadow-sm flex items-center justify-center transition-transform hover:scale-110",
-                                            isEmpty
-                                                ? "bg-slate-800 border-slate-700 border-dashed"
-                                                : "border-slate-600/50"
-                                        )}
-                                        style={!isEmpty ? {
-                                            backgroundColor: color,
-                                            boxShadow: `inset 0 2px 4px rgba(255,255,255,0.3), inset 0 -2px 4px rgba(0,0,0,0.4)` // Glossy effect
-                                        } : {}}
-                                        title={slot ? `${slot.tray_type} | ${slot.tray_color} | ${slot.remaining_percent}%` : "Empty Slot"}
-                                    >
-                                        {/* LowWarning or Type */}
-                                        {isLow && (
-                                            <AlertCircle size={10} className="text-white drop-shadow-md stroke-[3]" />
-                                        )}
-                                        {!isLow && !isEmpty && (
-                                            <span className="text-[6px] font-black text-white/90 drop-shadow-md uppercase truncate max-w-[16px]">
-                                                {slot?.tray_type?.substring(0, 3)}
-                                            </span>
-                                        )}
-                                        {isEmpty && (
-                                            <span className="text-[6px] text-slate-600 font-bold">
-                                                {idx + 1}
-                                            </span>
-                                        )}
-                                    </div>
-
-                                    {/* Tooltip for % */}
-                                    {!isEmpty && (
-                                        <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 bg-black/90 text-white text-[9px] px-1.5 py-0.5 rounded opacity-0 group-hover/slot:opacity-100 whitespace-nowrap z-10 pointer-events-none">
-                                            {slot?.remaining_percent}%
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
+                        {amsDisplay.map((slot, idx) => (
+                            <div
+                                key={idx}
+                                className="h-4 w-4 rounded-full border border-slate-600/50 shadow-sm"
+                                style={{ backgroundColor: formatColor(slot.tray_color) }}
+                                title={`${slot.tray_type || 'Unknown'} (${slot.tray_color || 'No Color'})`}
+                            />
+                        ))}
                     </div>
                 </div>
 
-                {/* Footer (Progress & Time) */}
+                {/* Footer: Progress Bar, Status Text, and Clearance Action */}
                 <div className="space-y-1">
                     <div className="flex justify-between items-end text-[10px] font-black uppercase tracking-widest leading-none mb-1">
-                        <span className={config.text}>{progress}%</span>
-                        {status === 'printing' && timeLeft && (
+                        {/* Status Text & CLEAR PLATE Action */}
+                        <div className={cn("flex items-center gap-2", config.text)}>
+                            {isPrinting && `${progress}%`}
+                            {isAwaitingClearance && (
+                                <button
+                                    onClick={handleClearance}
+                                    disabled={isClearing}
+                                    className="hover:underline flex items-center gap-1 cursor-pointer"
+                                >
+                                    {isClearing ? <Loader2 size={10} className="animate-spin" /> : "DONE - CLEAR PLATE"}
+                                </button>
+                            )}
+                            {!isPrinting && !isAwaitingClearance && status.toUpperCase().replace('_', ' ')}
+                        </div>
+
+                        {/* Time Remaining */}
+                        {isPrinting && timeLeft && (
                             <span className="text-slate-500 flex items-center gap-1 font-mono">
                                 <Clock size={10} /> {timeLeft}
                             </span>
                         )}
-                        {status !== 'printing' && (
-                            <span className={cn("px-1.5 py-0.5 rounded-[4px] text-[8px]", config.bg, config.text)}>
-                                {status.toUpperCase()}
-                            </span>
-                        )}
                     </div>
 
-                    {/* Highly Visible Progress Bar */}
-                    <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-950/50">
-                        <div
-                            className={cn("h-full transition-all duration-1000 shadow-[0_0_10px_rgba(0,0,0,0.3)]", config.progress)}
-                            style={{ width: `${progress}%` }}
-                        />
-                    </div>
+                    {/* Progress Bar - Visible if Printing OR Awaiting Clearance */}
+                    {showProgressBar && (
+                        <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-950/50">
+                            <div
+                                className={cn("h-full transition-all duration-1000 shadow-[0_0_10px_rgba(0,0,0,0.3)]", config.progress)}
+                                style={{ width: `${progress}%` }}
+                            />
+                        </div>
+                    )}
+
+                    {/* Placeholder height if no progress bar (to match card height consistency? or just let it shrink?) 
+                        The AddPrinterCard is min-h-150px. The PrinterCard has h-[150px] fixed.
+                        So we don't need a placeholder, flex layout will handle spacing.
+                    */}
                 </div>
             </div>
         </div>
     );
 };
-;

@@ -29,6 +29,7 @@ class PrinterTypeEnum(str, Enum):
 class PrinterStatusEnum(str, Enum):
     IDLE = "IDLE"
     PRINTING = "PRINTING"
+    AWAITING_CLEARANCE = "AWAITING_CLEARANCE"
     OFFLINE = "OFFLINE"
 
 class JobStatusEnum(str, Enum):
@@ -59,6 +60,8 @@ class Printer(SQLModel, table=True):
     # Example: [{"slot": 0, "type": "PLA", "color": "#FF0000", "remaining": 100}, ...]
     ams_data: List[dict] = Field(default=[], sa_column=Column(JSON))
     
+    current_job_id: Optional[int] = Field(default=None)
+
     jobs: List["Job"] = Relationship(back_populates="assigned_printer")
     ams_slots: List["AmsSlot"] = Relationship(back_populates="printer")
 
@@ -85,7 +88,7 @@ class Product(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    sku: str = Field(unique=True, index=True)
+    sku: Optional[str] = Field(default=None, unique=True, index=True)
     description: Optional[str] = None
     file_path_3mf: str
     
@@ -97,3 +100,16 @@ class Product(SQLModel, table=True):
     filament_requirements: Optional[List[dict]] = Field(default=None, sa_column=Column(JSON))
 
     created_at: datetime = Field(default_factory=datetime.now)
+
+    variants: List["ProductVariant"] = Relationship(back_populates="product", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
+
+class ProductVariant(SQLModel, table=True):
+    __tablename__ = "product_skus"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    product_id: int = Field(foreign_key="products.id")
+    sku: str = Field(unique=True, index=True, description="Generated SKU like PRODUCT_COLOR")
+    hex_color: str
+    color_name: str
+    
+    product: Product = Relationship(back_populates="variants")

@@ -14,7 +14,7 @@ import { AddPrinterDialog } from '@/components/dashboard/AddPrinterDialog';
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export default function PrintersPage() {
-    const { data: printers, error, isLoading } = useSWR<Printer[]>('http://localhost:8000/api/printers', fetcher, { refreshInterval: 5000 });
+    const { data: printers, error, isLoading } = useSWR<Printer[]>('http://127.0.0.1:8000/api/printers', fetcher, { refreshInterval: 5000 });
 
     const [selectedSerial, setSelectedSerial] = React.useState<string | null>(null);
     const [showAddDialog, setShowAddDialog] = React.useState(false);
@@ -61,7 +61,7 @@ export default function PrintersPage() {
             )}
 
             {/* Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 items-stretch">
                 {printers?.map((printer) => (
                     <div key={printer.serial} onClick={() => setSelectedSerial(printer.serial)} className="cursor-pointer">
                         <PrinterCard

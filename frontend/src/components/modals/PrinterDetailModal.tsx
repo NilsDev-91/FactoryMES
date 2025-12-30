@@ -28,14 +28,14 @@ export function PrinterDetailModal({ printer, isOpen, onClose }: PrinterDetailMo
         if (!confirm(`Are you sure you want to remove ${printer.name}? This cannot be undone.`)) return;
 
         try {
-            const res = await fetch(`http://localhost:8000/api/printers/${printer.serial}`, {
+            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}`, {
                 method: 'DELETE'
             });
 
             if (!res.ok) throw new Error('Failed to delete printer');
 
             onClose();
-            mutate('http://localhost:8000/api/printers');
+            mutate('http://127.0.0.1:8000/api/printers');
         } catch (e) {
             alert('Failed to delete printer');
         }

@@ -39,6 +39,19 @@ class ProductionDispatcher:
     async def run_cycle(self):
         """Single iteration of the dispatch logic."""
         async with async_session_maker() as session:
+            # 0. Manual Clearance Protocol Check
+            # Check availability to avoid churning if blocked
+            idle_stmt = select(Printer).where(Printer.current_status == PrinterStatusEnum.IDLE)
+            awaiting_stmt = select(Printer).where(Printer.current_status == PrinterStatusEnum.AWAITING_CLEARANCE)
+            
+            idle_printers = (await session.exec(idle_stmt)).all()
+            awaiting_printers = (await session.exec(awaiting_stmt)).all()
+            
+            if not idle_printers and awaiting_printers:
+                logger.info(f"Waiting for manual plate clearance ({len(awaiting_printers)} waiting)...")
+                await asyncio.sleep(5)
+                return
+
             # 1. Fetch PENDING Jobs
             statement = select(Job).where(Job.status == JobStatusEnum.PENDING)
             result = await session.exec(statement)

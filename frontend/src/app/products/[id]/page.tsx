@@ -14,7 +14,7 @@ export default function EditProductPage() {
     const id = params?.id;
 
     // Fetch existing data
-    const { data: product, error, isLoading } = useSWR(id ? `http://localhost:8000/api/products/${id}` : null, fetcher);
+    const { data: product, error, isLoading } = useSWR(id ? `http://127.0.0.1:8000/api/products/${id}` : null, fetcher);
 
     // Form State
     const [name, setName] = useState('');
@@ -81,7 +81,7 @@ export default function EditProductPage() {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const uploadRes = await fetch('http://localhost:8000/api/products/upload', {
+                const uploadRes = await fetch('http://127.0.0.1:8000/api/products/upload', {
                     method: 'POST',
                     body: formData,
                 });
@@ -102,7 +102,7 @@ export default function EditProductPage() {
                 file_path_3mf: filePath
             };
 
-            const updateRes = await fetch(`http://localhost:8000/api/products/${id}`, {
+            const updateRes = await fetch(`http://127.0.0.1:8000/api/products/${id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(productPayload),

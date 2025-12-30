@@ -8,7 +8,7 @@ import asyncio
 from app.core.config import settings
 from app.core.database import engine, async_session_maker
 from app.models.core import SQLModel, Printer
-from app.routers import system, printers, products, orders, ebay, auth
+from app.routers import system, printers, products, orders, ebay, auth, printer_control, fms
 from app.services.printer.mqtt_worker import PrinterMqttWorker
 # NEU: Importiere die Dispatcher Klasse
 from app.services.production.dispatcher import ProductionDispatcher 
@@ -109,6 +109,8 @@ app.include_router(ebay.router, prefix="/api")
 app.include_router(printers.router, prefix="/api")
 app.include_router(products.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
+app.include_router(printer_control.router, prefix="/api")
+app.include_router(fms.router, prefix="/api")
 
 @app.get("/")
 async def root():

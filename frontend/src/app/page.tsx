@@ -11,9 +11,15 @@ import { Order } from '@/components/orders/OrderTable'; // Type import
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export default function Dashboard() {
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // Poll Data
-  const { data: printers, error: pError } = useSWR<Printer[]>('http://localhost:8000/api/printers', fetcher, { refreshInterval: 5000 });
-  const { data: orders, error: oError } = useSWR<Order[]>('http://localhost:8000/api/orders', fetcher, { refreshInterval: 5000 });
+  const { data: printers, error: pError } = useSWR<Printer[]>('http://127.0.0.1:8000/api/printers', fetcher, { refreshInterval: 5000 });
+  const { data: orders, error: oError } = useSWR<Order[]>('http://127.0.0.1:8000/api/orders', fetcher, { refreshInterval: 5000 });
 
   const isLoading = !printers || !orders;
   const isError = pError || oError;
@@ -91,24 +97,30 @@ export default function Dashboard() {
             <TrendingUp size={20} className="text-blue-400" /> Production Output
           </h3>
           <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorJobs" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
-                  itemStyle={{ color: '#3b82f6' }}
-                />
-                <Area type="monotone" dataKey="jobs" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorJobs)" />
-              </AreaChart>
-            </ResponsiveContainer>
+            {mounted ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient id="colorJobs" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                    itemStyle={{ color: '#3b82f6' }}
+                  />
+                  <Area type="monotone" dataKey="jobs" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorJobs)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-slate-600">
+                <Loader2 size={24} className="animate-spin" />
+              </div>
+            )}
           </div>
         </div>
 

@@ -27,7 +27,7 @@ export const AddPrinterDialog: React.FC<AddPrinterDialogProps> = ({ isOpen, onCl
         setErrorMsg('');
 
         try {
-            const res = await fetch('http://localhost:8000/api/printers', {
+            const res = await fetch('http://127.0.0.1:8000/api/printers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
@@ -36,7 +36,7 @@ export const AddPrinterDialog: React.FC<AddPrinterDialogProps> = ({ isOpen, onCl
             if (!res.ok) throw new Error('Failed to add printer');
 
             setStatus('success');
-            mutate('http://localhost:8000/api/printers'); // Refresh list
+            mutate('http://127.0.0.1:8000/api/printers'); // Refresh list
 
             setTimeout(() => {
                 onClose();
