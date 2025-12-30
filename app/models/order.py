@@ -1,7 +1,7 @@
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, DateTime
 
 class Order(SQLModel, table=True):
     __tablename__ = "orders"
@@ -12,7 +12,10 @@ class Order(SQLModel, table=True):
     total_price: float
     currency: str
     status: str
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
     
     items: List["OrderItem"] = Relationship(back_populates="order", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
     jobs: List["Job"] = Relationship(back_populates="order")

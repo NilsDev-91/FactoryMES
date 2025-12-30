@@ -19,4 +19,5 @@ export interface Printer {
     current_temp_bed?: number;
     ams_inventory?: AmsSlot[]; // Legacy or New? Backend says ams_slots usually. Prompt says ams_inventory.
     ams_slots?: AmsSlot[]; // Support both for safety during migration
+    is_plate_cleared?: boolean;
 }

@@ -5,7 +5,7 @@ from typing import List, Dict
 from pydantic import BaseModel
 
 from app.core.database import get_session
-from app.models.filament import AmsSlot
+from app.models.filament import AmsSlot, FilamentProfile
 
 router = APIRouter(prefix="/fms", tags=["Filament Management System"])
 
@@ -56,3 +56,12 @@ async def get_available_materials(session: AsyncSession = Depends(get_session)):
         ))
 
     return response_list
+
+@router.get("/profiles", response_model=List[FilamentProfile])
+async def get_filament_profiles(session: AsyncSession = Depends(get_session)):
+    """
+    Returns all defined filament profiles.
+    """
+    statement = select(FilamentProfile)
+    result = await session.exec(statement)
+    return result.all()

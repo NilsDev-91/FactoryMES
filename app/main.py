@@ -4,9 +4,16 @@ from contextlib import asynccontextmanager
 from sqlmodel import text, select
 import logging
 import asyncio
+import os
+import sys
+
+# Windows fixes for MQTT/gmqtt
+if os.name == 'nt':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.core.config import settings
 from app.core.database import engine, async_session_maker
+from app.models import * # Load all models for metadata discovery
 from app.models.core import SQLModel, Printer
 from app.routers import system, printers, products, orders, ebay, auth, printer_control, fms
 from app.services.printer.mqtt_worker import PrinterMqttWorker

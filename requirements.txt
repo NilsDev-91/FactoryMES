@@ -9,3 +9,4 @@ numpy
 aioftp
 python-multipart
 httpx
+aiofiles

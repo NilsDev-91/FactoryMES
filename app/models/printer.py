@@ -22,6 +22,7 @@ class PrinterRead(BaseModel):
     current_temp_bed: float
     current_progress: int
     remaining_time: int
+    is_plate_cleared: bool
     ams_slots: List[AmsSlotRead] = []
 
     class Config:

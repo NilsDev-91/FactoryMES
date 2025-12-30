@@ -158,16 +158,34 @@ class PrinterCommander:
             
             topic = f"device/{serial}/request"
             
+            # Determine Local IP for the URL param (placeholder logic)
+            # In production, get this from os.environ or socket
+            import socket
+            try:
+                # get host ip (rough approximation)
+                local_ip = socket.gethostbyname(socket.gethostname())
+            except:
+                local_ip = "192.168.1.100"
+
+            # Construct internal SD path (where upload_file put it)
+            # upload_file uses /sdcard/factoryos/
+            sd_path = f"/sdcard/factoryos/{filename}"
+            
+            # Payload matching Bambu Lab 3MF requirement
             payload = {
                 "print": {
-                    "sequence_id": "2000",
                     "command": "project_file",
-                    "param": f"Metadata/plate_1.gcode",
-                    "url": f"file:///sdcard/factoryos/{filename}",
-                    "use_ams": True,
-                    "ams_mapping": ams_mapping
+                    "sequence_id": "2000",
+                    "param": sd_path, 
+                    "url": f"http://{local_ip}:9000/api/files/{filename}", 
+                    "md5": None,
+                    "ams_mapping": ams_mapping,
+                    "use_ams": True
                 }
             }
+            
+            # Log as requested
+            logger.info(f"📡 SENDING MQTT CMD: {payload}")
             
             client.publish(topic, json.dumps(payload))
             logger.info("Print payload published.")

@@ -12,6 +12,11 @@ from sqlalchemy import select
 from app.core.database import async_session_maker
 from app.models.core import Printer, PrinterStatusEnum
 from app.models.filament import AmsSlot
+from app.services.print_job_executor import PrintJobExecutionService
+from app.services.job_service import JobService
+from app.services.filament_manager import FilamentManager
+from app.services.printer.commander import PrinterCommander
+
 
 logger = logging.getLogger("PrinterMqttWorker")
 
@@ -59,21 +64,34 @@ class PrinterMqttWorker:
 
         while True:
             try:
-                logger.info(f"Connecting to {serial} at {ip}...")
-                await client.connect(ip, 8883, ssl=context, version=constants.MQTTv311)
+                logger.info(f"Connecting to {serial} at {ip}:8883 (SSL)...")
+                
+                # Increased timeout to 30.0s for better stability on busy networks
+                try:
+                    await asyncio.wait_for(
+                        client.connect(ip, 8883, ssl=context, version=constants.MQTTv311, keepalive=30),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"Printer Connection TIMEOUT: {serial} at {ip} did not respond within 30s.")
+                    raise
+                except ConnectionRefusedError:
+                    logger.error(f"Printer Connection REFUSED: {serial} at {ip}. Is the printer online and MQTT enabled?")
+                    raise
+                except Exception as e:
+                    logger.error(f"Printer Connection FAILED: {serial} at {ip} with error: {type(e).__name__}: {e}")
+                    raise
                 
                 # Keep alive until disconnect
-                # gmqtt client needs to be awaited or run in loop?
-                # Usually we wait on a future or signal.
-                # But here we stick to the pattern of 'connect' and just wait. 
-                # gmqtt doesn't block on connect, so we need a keep-alive loop.
-                # But actually gmqtt usage usually involves client.connect() then main loop?
                 STOP = asyncio.Event()
-                await STOP.wait() # Wait forever potentially
+                self._clients[serial] = client
+                
+                await STOP.wait()
 
-            except Exception as e:
-                logger.error(f"Connection lost to {serial}: {e}. Reconnecting in 5s...")
-                await asyncio.sleep(5)
+            except (asyncio.TimeoutError, Exception):
+                # Generic reconnect delay
+                logger.info(f"Retrying connection to {serial} in 10s...")
+                await asyncio.sleep(10)
             finally:
                 try:
                     await client.disconnect()
@@ -131,9 +149,11 @@ class PrinterMqttWorker:
             should_sync = True
             logger.info(f"Status change detected for {serial}: {old_status} -> {new_status}")
             
-            if new_status == "FINISH":
-                 logger.warning(f"Print finished on {serial}. Locking printer until manual clearance.")
-        
+        if new_status == "FINISH":
+             logger.warning(f"Print finished on {serial}. Safety Latch ENGAGED (Plate Dirty).")
+             updated_cache["is_plate_cleared"] = False
+             should_sync = True
+         
         # Check Time
         if (now - last_sync) > 5.0:
             should_sync = True
@@ -141,6 +161,26 @@ class PrinterMqttWorker:
         if should_sync:
             await self._sync_to_db(serial, updated_cache)
             self._last_sync_time[serial] = now
+
+        # 3. Auto-Advance Queue Logic
+        # Trigger: Transition to IDLE
+        current_data = self._state_cache.get(serial, {})
+        new_gcode_state = print_data.get("gcode_state")
+        
+        # We need previous state to detect transition, but we already merged.
+        # However, we can check if current status in DB is NOT IDLE (via sync) or rely on `old_status` variable if available in scope.
+        # `old_status` was captured before merge? No, `current_cache` was fetched before merge.
+        # So `old_status` is valid.
+        
+        if new_gcode_state == "IDLE" and old_status != "IDLE":
+             # Check if Plate is Cleared (using cache which is latest truth roughly, but DB is safer source of truth for the flag)
+             # However, we just updated cache.
+             is_plate_cleared = updated_cache.get("is_plate_cleared", True) # Default true if unknown? No, better check DB or assume True if missing.
+             # Actually, we should check the DB in the async task to be race-proof.
+             
+             logger.info(f"Printer {serial} transitioned to IDLE. Attempting to advance queue...")
+             asyncio.create_task(self._process_queue_for_printer(serial))
+
 
     def _deep_merge(self, current: dict, update: dict) -> dict:
         """
@@ -183,6 +223,9 @@ class PrinterMqttWorker:
                     
                 if "mc_remaining_time" in state:
                     printer.remaining_time = int(state["mc_remaining_time"])
+                    
+                if "is_plate_cleared" in state:
+                    printer.is_plate_cleared = state["is_plate_cleared"]
                     
                 # 3. Update AMS Slots
                 # API structure: state['ams']['ams'][ams_index]['tray'][tray_index]
@@ -240,3 +283,54 @@ class PrinterMqttWorker:
         except Exception as e:
             logger.error(f"DB Sync failed for {serial}: {e}")
 
+
+    async def _process_queue_for_printer(self, serial: str):
+        """
+        Auto-Advance Logic: Find pending jobs and execute them.
+        """
+        async with async_session_maker() as session:
+            job_service = JobService()
+            fms = FilamentManager()
+            commander = PrinterCommander()
+            executor = PrintJobExecutionService(session, fms, commander)
+            
+            # Safety Latch Check (DB Truth)
+            printer = await session.get(Printer, serial)
+            if not printer:
+                logger.error(f"Printer {serial} not found during queue processing.")
+                return
+
+            if not printer.is_plate_cleared:
+                logger.warning(f"Printer {serial} IDLE, but Plate is Dirty. Waiting for operator release.")
+                return 
+
+            # Retry Loop (limit 5 attempts to avoid infinite churning on bad queue)
+            for _ in range(5):
+                job = await job_service.get_next_pending_job(session)
+                if not job:
+                    logger.info(f"No pending jobs found for {serial}.")
+                    break
+                
+                logger.info(f"Found Job {job.id} for {serial}. Attempting execution...")
+                
+                try:
+                    # Execute (this checks FMS and dispatches)
+                    await executor.execute_print_job(job.id, serial)
+                    logger.info(f"Job {job.id} successfully started on {serial}.")
+                    break # Success, stop loop
+                    
+                except ValueError as e:
+                    # Mismatch or other domain error.
+                    # Executor already updates Job Status to FAILED/MATERIAL_MISMATCH.
+                    # We just log and continue to next job.
+                    logger.warning(f"Skipping Job {job.id} due to error: {e}")
+                    continue
+                    
+                except Exception as e:
+                    logger.error(f"Unexpected error executing Job {job.id}: {e}")
+                    # Job might rely on Executor's internal error handling to set FAILED.
+                    # If Executor raised creates unhandled state, ensure we don't loop forever on same job.
+                    # If job valid but failing systematically, we should probably SKIP it or it stays PENDING?
+                    # Executor `execute_print_job` updates status to FAILED on generic exception too.
+                    # So it shouldn't be PENDING anymore.
+                    continue

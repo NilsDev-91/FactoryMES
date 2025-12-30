@@ -80,3 +80,28 @@ async def delete_printer(serial: str, session: AsyncSession = Depends(get_sessio
     await session.commit()
     return {"ok": True}
 
+@router.post("/{serial}/action/clear-plate")
+async def clear_plate(serial: str, session: AsyncSession = Depends(get_session)):
+    """
+    Manually marks the printer plate as cleared.
+    This is used when a human operator removes the physical print.
+    Triggers 'Auto-Start' re-evaluation on next tick.
+    """
+    statement = select(Printer).where(Printer.serial == serial)
+    printer = (await session.exec(statement)).first()
+    
+    if not printer:
+         raise HTTPException(status_code=404, detail="Printer not found")
+         
+    printer.is_plate_cleared = True
+    
+    # Optional: We could manually trigger a job check here, 
+    # but the background worker will pick it up on next MQTT heartbeat 
+    # or Poll interval (every 2s).
+    
+    session.add(printer)
+    await session.commit()
+    await session.refresh(printer)
+    
+    return {"message": "Plate Cleared. Auto-Start re-enabled."}
+

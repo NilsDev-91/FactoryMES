@@ -5,6 +5,7 @@ import { mutate } from 'swr';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Printer } from '../../types/printer';
+import { PrinterControls } from '../printers/printer-controls';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
@@ -204,6 +205,11 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                                 title={`${slot.tray_type || 'Unknown'} (${slot.tray_color || 'No Color'})`}
                             />
                         ))}
+                    </div>
+
+                    {/* Controls Integration */}
+                    <div className="ml-auto">
+                        <PrinterControls printer={printer} />
                     </div>
                 </div>
 
