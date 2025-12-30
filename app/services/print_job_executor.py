@@ -87,11 +87,13 @@ class PrintJobExecutionService:
             msg = f"Delta E verification failed for Job {job_id} on Printer {printer_serial}. Target: {target_hex}"
             logger.warning(msg)
             
-            job.status = JobStatusEnum.FAILED
-            job.error_message = "MATERIAL_MISMATCH: " + msg
-            await self.session.commit()
+            # Do NOT fail the job permanently. Leave it PENDING so it can be retried 
+            # (e.g. if filament is changed or another printer becomes available).
+            # job.status = JobStatusEnum.FAILED <--- DISABLED
+            # job.error_message = "MATERIAL_MISMATCH: " + msg
+            # await self.session.commit()
             
-            # Raise domain exception
+            # Raise domain exception to stop execution here
             raise ValueError("MATERIAL_MISMATCH: " + msg) 
 
         else:
@@ -100,8 +102,16 @@ class PrintJobExecutionService:
             
             # Construct MQTT Payload (handled by commander, we just pass mapping)
             # The commander expects a LIST of ints for ams_mapping.
-            # Usually [slot_id] for single color print.
-            ams_mapping = [match_slot_idx]
+            # CRITICAL FIX: The 3MF file might contain hardcoded tool commands (e.g. T2).
+            # We must map ALL potential virtual tools (0-15) to the selected physical slot
+            # to override the slicer's default assignment.
+            ams_mapping = [match_slot_idx] * 16
+
+            # DEBUG LOGGING (High Visibility)
+            logger.error(f"🖨️ DISPATCHING JOB {job_id}:")
+            logger.error(f"   Target: {target_hex}")
+            logger.error(f"   FMS Match: Slot {match_slot_idx} (Index)")
+            logger.error(f"   Mapping Sent: {ams_mapping}")
             
             try:
                 await self.printer_commander.start_job(printer, job, ams_mapping)

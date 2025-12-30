@@ -44,6 +44,18 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 
 REM ====================================================
+REM 0.5 CLEANUP / RESTART
+REM ====================================================
+echo [PRE-FLIGHT] Cleaning up old processes...
+REM Kill Process on Port 8001 (Backend)
+for /f "tokens=5" %%a in ('netstat -aon ^| find ":8001" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
+REM Kill Process on Port 8000 (Backend)
+for /f "tokens=5" %%a in ('netstat -aon ^| find ":8000" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
+REM Kill Process on Port 3000 (Frontend)
+for /f "tokens=5" %%a in ('netstat -aon ^| find ":3000" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
+echo [OK] Ports 8000, 8001 and 3000 cleared.
+
+REM ====================================================
 REM 1. START DATABASE
 REM ====================================================
 echo.

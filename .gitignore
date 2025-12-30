@@ -27,6 +27,13 @@ venv/
 env/
 ENV/
 .env
+.venv/
+*.bak
+*.3mf.bak
+downloaded_check.3mf
+temp/
+storage/3mf/temp_patch/
+debug_commander.log
 
 # Editor
 .vscode/

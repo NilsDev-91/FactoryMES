@@ -8,11 +8,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import select, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import sessionmaker, selectinload
-from datetime import datetime, timezone
 import uuid
 
 from app.core.config import settings
-from app.models.core import Printer, Job, JobStatusEnum, Product
+from app.models.core import Printer, Job, JobStatusEnum, Product, PrinterStatusEnum
 from app.models.product_sku import ProductSKU
 from app.models.order import Order, OrderItem
 
@@ -22,136 +21,159 @@ async def setup_live_test():
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as session:
-        # 1. Printer Setup
-        print("🔍 Searching for 'A1 REAL'...")
+        # =================================================================================================
+        # 1. Printer Setup (A1 REAL)
+        # =================================================================================================
+        print("\n🔧 STEP 1: PRINTER SETUP")
         stmt_printer = select(Printer).where(Printer.name == "A1 REAL")
         printer = (await session.exec(stmt_printer)).first()
 
         if not printer:
-            print("❌ Printer 'A1 REAL' not found! Please check connection/naming.")
-            # Fallback: Get first printer or exit?
-            # Let's try to get *any* printer just in case
+            print("❌ CRITICAL: Printer 'A1 REAL' not found!")
             stmt_any = select(Printer)
             printer = (await session.exec(stmt_any)).first()
             if printer:
                 print(f"⚠️  Fallback: Using '{printer.name}' ({printer.serial})")
             else:
-                print("❌ No printers found at all. Aborting.")
+                print("❌ FATAL: No printers found. Aborting.")
                 return
 
         print(f"✅ Target Printer: {printer.name} ({printer.serial})")
         
         # Reset Printer State
         printer.is_plate_cleared = True
-        printer.current_status = "IDLE" # Force IDLE to be safe
+        printer.current_status = PrinterStatusEnum.IDLE 
         session.add(printer)
         print("✨ Printer state reset: Plate Cleared = TRUE, Status = IDLE")
+        
+        # NO AMS SEEDING! We rely on Live Data or manual FMS setup.
+        print("⚠️  Mode: NO AMS SEEDING. Relying on FMS and Live Printer Data.")
 
-        # 2. Cleanup Queue
-        print("🧹 Clearing Production Queue...")
+        # =================================================================================================
+        # 2. Clean Slate
+        # =================================================================================================
+        print("\n🧹 STEP 2: CLEANUP")
         await session.exec(delete(Job))
-        # Clear legacy/test orders to ensure a clean slate
         await session.exec(delete(OrderItem))
         await session.exec(delete(Order))
-        # Also clean up our test orders if needed, but maybe keep them for history?
-        # Let's just create a new one.
-        print("✅ Queue cleared.")
+        print("✅ Production Queue & Orders Cleared.")
 
-        # 3. Create Dummy Order
-        order_id = f"TEST-{uuid.uuid4().hex[:6].upper()}"
-        dummy_order = Order(
-            ebay_order_id=order_id,
-            buyer_username="Mr. Test",
-            total_price=99.99,
-            currency="USD",
-            status="PAID"
-        )
-        session.add(dummy_order)
-        await session.commit()
-        await session.refresh(dummy_order)
-        print(f"📦 Created Order: {order_id}")
-
-        # 4. Find Products (White and Red variants)
-        # We need SKU objects to get color data if we want to be fancy, 
-        # or just assume specific SKUs exist.
-        # Let's look up by color/name similarity.
+        # =================================================================================================
+        # 3. Strict Catalog Validation
+        # =================================================================================================
+        print("\n📜 STEP 3: CATALOG VALIDATION")
         
-        stmt_variants = (
-            select(ProductSKU)
-            .where(ProductSKU.parent_id != None)
-            .options(
-                selectinload(ProductSKU.product).selectinload(Product.print_file),
-                selectinload(ProductSKU.print_file)
-            )
-        )
-        variants = (await session.exec(stmt_variants)).all()
+        # A. Find Parent Product "Eye"
+        stmt_parent = select(Product).where(Product.name == "Eye")
+        parent_product = (await session.exec(stmt_parent)).first()
         
-        white_variant = None
-        red_variant = None
-
-        for v in variants:
-            name_lower = v.name.lower()
-            if "white" in name_lower and not white_variant:
-                white_variant = v
-            if "red" in name_lower and not red_variant:
-                red_variant = v
-        
-        if not white_variant:
-            print("⚠️ Could not find a 'White' variant. Picking first available.")
-            white_variant = variants[0] if variants else None
-        
-        if not red_variant:
-             print("⚠️ Could not find a 'Red' variant. Picking second available.")
-             red_variant = variants[1] if len(variants) > 1 else white_variant
-
-        if not white_variant or not red_variant:
-            print("❌ Not enough products found to seed jobs.")
+        if not parent_product:
+            print("❌ CRITICAL: Parent Product 'Eye' not found!")
             return
+            
+        print(f"✅ Found Parent Product: 'Eye' (ID: {parent_product.id})")
+        
+        # B. Find Variants (Robust Lookup: "WHITE - EYE" or "Eye - PLA (#FFFFFF)")
+        async def get_sku_robust(names):
+            for n in names:
+                s = select(ProductSKU).where(ProductSKU.name == n).options(
+                     selectinload(ProductSKU.product),
+                     selectinload(ProductSKU.print_file)
+                )
+                res = (await session.exec(s)).first()
+                if res: return res
+            return None
 
-        # 5. Create Jobs
-        print("🌱 Seeding Jobs...")
+        sku_white = await get_sku_robust(["WHITE - EYE", "Eye - PLA (#FFFFFF)"])
+        sku_red = await get_sku_robust(["RED - EYE", "Eye - PLA (#FF0000)"])
         
-        # Job 1: White (Priority 20 - Higher goes first usually? Or lower? 
-        # Standard logic: Higher priority number = Higher importance/First?
-        # Let's assume Descending Priority (20 > 10).
+        if not sku_white:
+            print("❌ CRITICAL: SKU 'WHITE - EYE' (or alias) not found.")
+            return
+        if not sku_red:
+            print("❌ CRITICAL: SKU 'RED - EYE' (or alias) not found.")
+            return
+            
+        print(f"✅ Found SKU: {sku_white.name}")
+        print(f"✅ Found SKU: {sku_red.name}")
         
-        # We need gcode_path.
-        # If print_file/file_path logic is complex, we'll just grab it from product.
-        # Fallback to a dummy path if missing, ensuring it doesn't crash worker immediately (or maybe it should).
-        
-        def get_gcode_path(sku):
-            if sku.print_file: return sku.print_file.file_path
-            if sku.product and sku.product.print_file: return sku.product.print_file.file_path
-            if sku.product and sku.product.file_path_3mf: return sku.product.file_path_3mf
-            return "storage/3mf/dummy.gcode"
+        # C. Resolve File Path (Log Logic)
+        def resolve_and_log(sku):
+            if sku.print_file:
+                 return sku.print_file.file_path, "Variant Specific"
+            
+            if sku.product and sku.product.file_path_3mf:
+                 return sku.product.file_path_3mf, "Inherited from Parent"
+                 
+            return None, "Missing"
 
+        path_white, source_white = resolve_and_log(sku_white)
+        print(f"🔍 File Resolution (White): {path_white} ({source_white})")
+        if source_white == "Missing":
+             print("❌ CRITICAL: No file path found for White SKU!")
+             return
+
+        path_red, source_red = resolve_and_log(sku_red)
+
+        # =================================================================================================
+        # 4. Create Production Orders
+        # =================================================================================================
+        print("\n📦 STEP 4: CREATE ORDERS")
+        
+        # Order A: White (Priority 20)
+        u1 = uuid.uuid4().hex[:6].upper()
+        order1 = Order(ebay_order_id=f"ORD-WHT-{u1}", buyer_username="Tester_White", total_price=50.0, currency="USD", status="PAID")
+        session.add(order1)
+        await session.commit()
+        
+        item1 = OrderItem(order_id=order1.id, sku=sku_white.sku, title=sku_white.name, quantity=1, variation_details="Color: White")
+        session.add(item1)
+        
+        # Job A (NO virtual-id, FMS Logic Only)
+        # Note: We use the resolved path_white
+        reqs_white = [{"hex_color": sku_white.hex_color or "#FFFFFF", "material": "PLA"}]
+        
         job1 = Job(
-            order_id=dummy_order.id,
-            assigned_printer_serial=printer.serial,
-            gcode_path=get_gcode_path(white_variant),
+            order_id=order1.id,
+            product=parent_product,
+            assigned_printer_serial=printer.serial, # Pre-assigning to force target printer checking
+            gcode_path=path_white,
             status=JobStatusEnum.PENDING,
             priority=20,
-            filament_requirements=[{"color": white_variant.hex_color or "#FFFFFF", "type": "PLA"}]
+            filament_requirements=reqs_white
         )
+        session.add(job1)
+        
+        # Order B: Red (Priority 10)
+        u2 = uuid.uuid4().hex[:6].upper()
+        order2 = Order(ebay_order_id=f"ORD-RED-{u2}", buyer_username="Tester_Red", total_price=50.0, currency="USD", status="PAID")
+        session.add(order2)
+        await session.commit()
+        
+        item2 = OrderItem(order_id=order2.id, sku=sku_red.sku, title=sku_red.name, quantity=1, variation_details="Color: Red")
+        session.add(item2)
+        
+        reqs_red = [{"hex_color": sku_red.hex_color or "#FF0000", "material": "PLA"}]
         
         job2 = Job(
-            order_id=dummy_order.id,
+            order_id=order2.id,
+            product=parent_product,
             assigned_printer_serial=printer.serial,
-            gcode_path=get_gcode_path(red_variant),
+            gcode_path=path_red,
             status=JobStatusEnum.PENDING,
             priority=10,
-            filament_requirements=[{"color": red_variant.hex_color or "#FF0000", "type": "PLA"}]
+            filament_requirements=reqs_red # Pure FMS
         )
-
-        session.add(job1)
         session.add(job2)
-        await session.commit()
-
-        print(f"🚀 Job #1 Queued: {white_variant.name} (White) - Priority 20")
-        print(f"🚀 Job #2 Queued: {red_variant.name} (Red)   - Priority 10")
         
-        print("\n✅ Test Ready. Printer 'A1 REAL' is Clean & IDLE.")
-        print("WAITING: Start the Backend/Worker now to see it fly.")
+        await session.commit()
+        
+        print(f"🚀 Orders Created:")
+        print(f"   1. Order {order1.ebay_order_id}: {sku_white.name} -> Job PENDING (Prio 20)")
+        print(f"   2. Order {order2.ebay_order_id}: {sku_red.name}   -> Job PENDING (Prio 10)")
+        
+        print("\n✅ SETUP COMPLETE. FMS should now match Filament Requirements to Live AMS Data.")
+        print("\n⚠️  IMPORTANT: Please RESTART the backend (uvicorn) to apply the latest 'commander.py' fixes!")
 
 if __name__ == "__main__":
     asyncio.run(setup_live_test())

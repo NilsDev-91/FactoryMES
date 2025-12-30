@@ -34,6 +34,7 @@ class PrinterMqttWorker:
         self._clients: Dict[str, MQTTClient] = {}
         self._state_cache: Dict[str, dict] = {} # Serial -> Full State Dict
         self._last_sync_time: Dict[str, float] = {} # Serial -> Timestamp
+        self._background_tasks = set() # Prevent GC of running tasks
 
     async def start_listening(self, ip: str, access_code: str, serial: str):
         """
@@ -43,7 +44,9 @@ class PrinterMqttWorker:
             logger.warning(f"Already listening to {serial}")
             return
 
-        asyncio.create_task(self._run_client(ip, access_code, serial))
+        task = asyncio.create_task(self._run_client(ip, access_code, serial))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _run_client(self, ip: str, access_code: str, serial: str):
         """
@@ -62,41 +65,61 @@ class PrinterMqttWorker:
         client.on_connect = self._create_on_connect(serial)
         client.on_disconnect = self._create_on_disconnect(serial)
 
-        while True:
+        # OUTER LOOP: Ensure task NEVER dies, even on unforeseen crashes
+        while True: 
             try:
-                logger.info(f"Connecting to {serial} at {ip}:8883 (SSL)...")
-                
-                # Increased timeout to 30.0s for better stability on busy networks
-                try:
-                    await asyncio.wait_for(
-                        client.connect(ip, 8883, ssl=context, version=constants.MQTTv311, keepalive=30),
-                        timeout=30.0
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"Printer Connection TIMEOUT: {serial} at {ip} did not respond within 30s.")
-                    raise
-                except ConnectionRefusedError:
-                    logger.error(f"Printer Connection REFUSED: {serial} at {ip}. Is the printer online and MQTT enabled?")
-                    raise
-                except Exception as e:
-                    logger.error(f"Printer Connection FAILED: {serial} at {ip} with error: {type(e).__name__}: {e}")
-                    raise
-                
-                # Keep alive until disconnect
-                STOP = asyncio.Event()
-                self._clients[serial] = client
-                
-                await STOP.wait()
+                # INNER LOOP: Connection Logic
+                while True:
+                    try:
+                        logger.info(f"Connecting to {serial} at {ip}:8883 (SSL)...")
+                        
+                        # Increased timeout to 30.0s for better stability on busy networks
+                        try:
+                            await asyncio.wait_for(
+                                client.connect(ip, 8883, ssl=context, version=constants.MQTTv311, keepalive=30),
+                                timeout=30.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"Printer Connection TIMEOUT: {serial} at {ip} did not respond within 30s.")
+                            raise
+                        except ConnectionRefusedError:
+                            logger.error(f"Printer Connection REFUSED: {serial} at {ip}. Is the printer online and MQTT enabled?")
+                            raise
+                        except (OSError, ConnectionResetError) as e:
+                             logger.error(f"Printer Socket Error: {e}. Retrying...")
+                             raise
+                        except Exception as e:
+                            logger.error(f"Printer Connection FAILED: {serial} at {ip} with error: {type(e).__name__}: {e}")
+                            raise
+                        
+                        # Keep alive until disconnect
+                        STOP = asyncio.Event()
+                        self._clients[serial] = client
+                        
+                        await STOP.wait()
 
-            except (asyncio.TimeoutError, Exception):
-                # Generic reconnect delay
-                logger.info(f"Retrying connection to {serial} in 10s...")
-                await asyncio.sleep(10)
-            finally:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
+                    except (asyncio.TimeoutError, OSError, ConnectionResetError):
+                        # Transient Network Errors -> Fast Retry
+                        logger.info(f"Connection lost/failed for {serial}. Retrying in 5s...")
+                        await asyncio.sleep(5)
+                        
+                    except Exception as e:
+                        # Logic/Protocol Errors -> Slower Retry
+                        logger.error(f"Worker Loop Error for {serial}: {e}")
+                        logger.info(f"Retrying connection to {serial} in 10s...")
+                        await asyncio.sleep(10)
+                        
+                    finally:
+                        try:
+                            await client.disconnect()
+                        except:
+                            pass
+                        if serial in self._clients:
+                             del self._clients[serial]
+                             
+            except Exception as critical_e:
+                logger.critical(f"CRITICAL: Outer Loop Crash for {serial}: {critical_e}. Restarting entire loop in 5s...", exc_info=True)
+                await asyncio.sleep(5)
 
     def _create_on_connect(self, serial: str):
         def on_connect(client, flags, rc, properties):
@@ -262,10 +285,16 @@ class PrinterMqttWorker:
                                 session.add(target_slot)
                                 printer.ams_slots.append(target_slot)
 
-                            if tray_data:
-                                # Update Slot
-                                # Colors from Bambu are often like "FF00FF00" (RGBA?) or just Hex. 
-                                # We treat as Hex string.
+                            if not tray_data:
+                                # EMPTY SLOT: Clear fields
+                                target_slot.tray_color = None
+                                target_slot.tray_type = None
+                                target_slot.remaining_percent = None
+                                # Do NOT delete the slot, just clear it.
+                                session.add(target_slot)
+                                
+                            else:
+                                # OCCUPIED SLOT: Update fields
                                 if "tray_color" in tray_data:
                                     target_slot.tray_color = tray_data["tray_color"]
                                 

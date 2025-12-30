@@ -8,6 +8,8 @@ from sqlalchemy.orm import selectinload
 from app.core.database import async_session_maker
 from app.models.core import Job, Printer, Product, JobStatusEnum, PrinterStatusEnum, OrderStatusEnum
 from app.models.order import Order
+from app.models.product_sku import ProductSKU
+from app.models.print_file import PrintFile
 from app.services.logic.filament_manager import FilamentManager
 from app.services.printer.commander import PrinterCommander
 
@@ -53,7 +55,8 @@ class ProductionDispatcher:
                 return
 
             # 1. Fetch PENDING Jobs
-            statement = select(Job).where(Job.status == JobStatusEnum.PENDING)
+            # 1. Fetch PENDING Jobs
+            statement = select(Job).where(Job.status == JobStatusEnum.PENDING).order_by(Job.priority.desc())
             result = await session.exec(statement)
             pending_jobs = result.all()
             
@@ -64,14 +67,55 @@ class ProductionDispatcher:
 
             for job in pending_jobs:
                 # 2. Get Product Requirements
+                # LEVEL 1: Direct Product Match
                 prod_stmt = select(Product).where(Product.file_path_3mf == job.gcode_path)
                 prod_result = await session.exec(prod_stmt)
                 product = prod_result.first()
                 
-                if not product:
-                    logger.warning(f"Job {job.id}: Product not found for gcode {job.gcode_path}. Skipping.")
-                    continue
+                # LEVEL 1 FALLBACK: Normalized Path
+                if not product and job.gcode_path and "\\" in job.gcode_path:
+                    normalized_path = job.gcode_path.replace("\\", "/")
+                    prod_stmt_norm = select(Product).where(Product.file_path_3mf == normalized_path)
+                    product = (await session.exec(prod_stmt_norm)).first()
+                    if product:
+                        logger.info(f"Job {job.id}: Found product via Level 1 Normalization.")
 
+                # LEVEL 2: Variant "Deep Search" (ProductSKU -> PrintFile)
+                if not product:
+                    # Try raw path match first
+                    sku_stmt = (
+                        select(ProductSKU)
+                        .join(PrintFile)
+                        .where(PrintFile.file_path == job.gcode_path)
+                        .options(selectinload(ProductSKU.product))
+                    )
+                    sku = (await session.exec(sku_stmt)).first()
+
+                    # Try normalized path match if needed
+                    if not sku and job.gcode_path and "\\" in job.gcode_path:
+                        normalized_path = job.gcode_path.replace("\\", "/")
+                        sku_stmt_norm = (
+                            select(ProductSKU)
+                            .join(PrintFile)
+                            .where(PrintFile.file_path == normalized_path)
+                            .options(selectinload(ProductSKU.product))
+                        )
+                        sku = (await session.exec(sku_stmt_norm)).first()
+                    
+                    if sku and sku.product:
+                        product = sku.product
+                        logger.info(f"Job {job.id}: Resolved product via Variant SKU match: {sku.name}")
+
+                if not product:
+                    logger.warning(f"Job {job.id}: Product not found for gcode {job.gcode_path} (Deep Search failed). Skipping.")
+                    continue
+                                
+                # Check basic requirement existence locally or let service handle?
+                # Service returns None if no match.
+                # Only skip if no material defined?
+                if not product.required_filament_type:
+                     logger.warning(f"Job {job.id}: Product has no material defined. Skipping.")
+                
                 # Attach product to job for the logic service
                 # (The logic service expects job.product or logic to find it)
                 # job.product = product <--- REMOVED
@@ -85,7 +129,12 @@ class ProductionDispatcher:
                 
                 # 3. Find Printer
                 # New Signature: find_best_printer(session, job, product)
-                match = await self.filament_manager.find_best_printer(session, job, product=product)
+                logger.info(f"Job {job.id}: Finding best printer...")
+                try:
+                    match = await self.filament_manager.find_best_printer(session, job, product=product)
+                except Exception as match_err:
+                    logger.error(f"Job {job.id}: Error in find_best_printer: {match_err}", exc_info=True)
+                    continue
                 
                 if match:
                     printer, ams_mapping = match
@@ -139,7 +188,7 @@ class ProductionDispatcher:
                 logger.info(f"Job {job.id}: Execution started successfully on {printer_serial}.")
                 
             except Exception as exec_err:
-                logger.error(f"Job {job.id}: Execution Failed - {exec_err}")
+                logger.error(f"Job {job.id}: Execution Failed - {exec_err}", exc_info=True)
                 
                 # --- REVERT ---
                 # Re-fetch valid state
@@ -148,7 +197,7 @@ class ProductionDispatcher:
                 
                 printer.current_status = PrinterStatusEnum.IDLE
                 job.status = JobStatusEnum.FAILED
-                job.error_message = str(exec_err)
+                job.error_message = f"{type(exec_err).__name__}: {str(exec_err)}"
                 job.assigned_printer_serial = None 
                 
                 session.add(printer)
@@ -156,4 +205,4 @@ class ProductionDispatcher:
                 await session.commit()
 
         except Exception as e:
-            logger.error(f"Error during assignment transaction for Job {job.id}: {e}")
+            logger.error(f"Error during assignment transaction for Job {job.id}: {e}", exc_info=True)

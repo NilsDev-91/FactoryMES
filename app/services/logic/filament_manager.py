@@ -139,6 +139,11 @@ def calculate_delta_e_2000(hex_a: str, hex_b: str) -> float:
         print(f"Error calculating Delta E: {e}")
         return 999.0
 
+
+import logging
+
+logger = logging.getLogger("FilamentManager")
+
 # --- Service Logic ---
 
 class FilamentManager:
@@ -173,23 +178,29 @@ class FilamentManager:
         )
         result = await session.execute(query)
         candidates = result.scalars().all()
+        
+        logger.info(f"FMS: Found {len(candidates)} IDLE candidates.")
 
         if not candidates:
             return None
 
         # Step B: Get Requirements
         requirements = self._get_job_requirements(job, product)
+        logger.info(f"FMS Job {job.id} Requirements: {requirements}")
         
         if not requirements:
             # If no filament required, return first idle printer with empty mapping
+            logger.info("FMS: No requirements, picking first candidate.")
             return candidates[0], []
 
         # Step C & D: Iterate and Match
         for printer in candidates:
             ams_mapping = self._match_printer(printer, requirements)
             if ams_mapping is not None:
+                logger.info(f"FMS: Match FOUND on {printer.serial}. Mapping: {ams_mapping}")
                 return printer, ams_mapping
 
+        logger.warning(f"FMS: No match found for Job {job.id} among {len(candidates)} candidates.")
         return None
 
     def _get_job_requirements(self, job: Job, product: Optional[any] = None) -> List[dict]:
@@ -250,6 +261,8 @@ class FilamentManager:
         # Sort requirements by virtual_id
         sorted_reqs = sorted(requirements, key=lambda x: x.get('virtual_id', 0))
         
+        logger.debug(f"Matching printer {printer.serial} with {len(printer.ams_slots)} slots...")
+
         for i, req in enumerate(sorted_reqs):
             req_material = req['material']
             req_color = req['hex_color']
@@ -268,6 +281,7 @@ class FilamentManager:
                 
                 # 1. Strict Material Match
                 if not slot.tray_type or slot.tray_type.lower() != req_material.lower():
+                    # logger.debug(f"Slot {pid} mismatch type: {slot.tray_type} vs {req_material}")
                     continue
                 
                 # 2. Color Match
@@ -275,6 +289,7 @@ class FilamentManager:
                     continue
                     
                 delta_e = calculate_delta_e_2000(req_color, slot.tray_color)
+                # logger.debug(f"Slot {pid} color {slot.tray_color} vs {req_color} -> dE={delta_e}")
                 
                 if delta_e < min_delta_e:
                     min_delta_e = delta_e
@@ -284,7 +299,9 @@ class FilamentManager:
             if match_found:
                 mapping[i] = best_slot_index
                 used_physical_slots.add(best_slot_index)
+                logger.debug(f"Requirement {i} matched to Slot {best_slot_index} (dE={min_delta_e:.2f})")
             else:
+                logger.debug(f"Requirement {i} ({req_material}, {req_color}) FAILED to match any slot on {printer.serial}")
                 return None # Fail
 
         return mapping

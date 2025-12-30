@@ -9,6 +9,8 @@ from app.models.printer import PrinterRead
 
 router = APIRouter(prefix="/printers", tags=["Printer Control"])
 
+from sqlalchemy.orm import selectinload
+
 @router.post("/{printer_id}/confirm-clearance", response_model=PrinterRead)
 async def confirm_clearance(printer_id: str, session: AsyncSession = Depends(get_session)):
     """
@@ -16,7 +18,7 @@ async def confirm_clearance(printer_id: str, session: AsyncSession = Depends(get
     Transition from AWAITING_CLEARANCE -> IDLE.
     Resets current_job_id to None.
     """
-    statement = select(Printer).where(Printer.serial == printer_id)
+    statement = select(Printer).where(Printer.serial == printer_id).options(selectinload(Printer.ams_slots))
     printer = (await session.exec(statement)).first()
 
     if not printer:
