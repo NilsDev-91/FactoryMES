@@ -33,7 +33,14 @@ class PrinterStatusEnum(str, Enum):
     IDLE = "IDLE"
     PRINTING = "PRINTING"
     AWAITING_CLEARANCE = "AWAITING_CLEARANCE"
+    COOLDOWN = "COOLDOWN"   # Waiting for thermal release
+    EJECTING = "EJECTING"   # Execution of clearing G-code
     OFFLINE = "OFFLINE"
+
+class ClearingStrategyEnum(str, Enum):
+    MANUAL = "MANUAL"
+    A1_INERTIAL_FLING = "A1_INERTIAL_FLING"
+    X1_MECHANICAL_SWEEP = "X1_MECHANICAL_SWEEP"
 
 class JobStatusEnum(str, Enum):
     PENDING = "PENDING"
@@ -56,7 +63,10 @@ class Printer(SQLModel, table=True):
     current_temp_nozzle: float = Field(default=0.0)
     current_temp_bed: float = Field(default=0.0)
     is_plate_cleared: bool = Field(default=True)
+    hardware_model: Optional[str] = Field(default="GENERIC") # Enum: A1, X1C, etc.
     can_auto_eject: bool = Field(default=False)
+    clearing_strategy: ClearingStrategyEnum = Field(default=ClearingStrategyEnum.MANUAL)
+    thermal_release_temp: float = Field(default=29.0) # Release part when bed < this temp
     
     current_progress: int = Field(default=0) # Percentage 0-100
     remaining_time: int = Field(default=0) # Minutes

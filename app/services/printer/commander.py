@@ -72,12 +72,12 @@ class PrinterCommander:
             sanitized_path = await sanitizer.sanitize_and_repack(Path(file_path), target_index=ams_index, printer_type=printer.type)
             upload_source_path = str(sanitized_path)
             
-            # T0 Master Mapping: Logical T0 -> Physical ams_index
-            # We only need to map the first tool (index 0) because G-code only uses T0.
-            final_mapping = [ams_index] 
+            # Native Strategy: Identity Mapping
+            # We explicitly call T{ams_index} in G-code, so ams_mapping must be 1:1.
+            final_mapping = [0, 1, 2, 3]
             
-            logger.info(f"Mapping Logical T0 -> Physical AMS Index {ams_index} (Slot {target_slot})")
-            logger.info(f"Sanitized {filename} -> Uploading {remote_filename} with Mapping {final_mapping}")
+            logger.info(f"Targeting Physical AMS Index {ams_index} (Slot {target_slot}) via Native G-Code Injection.")
+            logger.info(f"Sanitized {filename} -> Uploading {remote_filename} with Identity Mapping {final_mapping}")
 
             # 2. Upload File (With Retry)
             logger.info(f"Starting upload for Job {job.id} to {printer.serial}...")
@@ -128,6 +128,47 @@ class PrinterCommander:
                     logger.debug(f"Cleaned up temporary file: {sanitized_path}")
                 except Exception as ex:
                     logger.warning(f"Failed to cleanup temp file {sanitized_path}: {ex}")
+
+    async def start_maintenance_job(self, printer: Printer, local_3mf_path: Path) -> None:
+        """
+        Specialized method for maintenance tasks (like bed clearing).
+        Uploads and starts a 3MF file without sanitization.
+        """
+        if not printer.ip_address or not printer.access_code:
+            raise ValueError(f"Printer {printer.serial} missing IP or Access Code")
+
+        filename = local_3mf_path.name
+        # Unique Remote Filename
+        import time
+        remote_filename = f"maint_{int(time.time())}_{filename}"
+
+        try:
+            # 1. Upload
+            logger.info(f"Uploading maintenance job to {printer.serial}: {remote_filename}")
+            await self.upload_file(
+                ip=printer.ip_address,
+                access_code=printer.access_code,
+                local_path=str(local_3mf_path),
+                target_filename=remote_filename
+            )
+
+            # 2. Trigger Print
+            mapping = [0, 1, 2, 3]
+            logger.info(f"Triggering maintenance job on {printer.serial}...")
+            await self.start_print_job(
+                ip=printer.ip_address,
+                serial=printer.serial,
+                access_code=printer.access_code,
+                filename=remote_filename,
+                ams_mapping=mapping,
+                local_file_path=str(local_3mf_path)
+            )
+            
+            logger.info(f"Maintenance Job {remote_filename} started successfully.")
+
+        except Exception as e:
+            logger.error(f"Maintenance Job Failed for {printer.serial}: {e}")
+            raise e
 
     async def upload_file(self, ip: str, access_code: str, local_path: str, target_filename: str) -> None:
         """

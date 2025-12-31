@@ -39,6 +39,13 @@ class PrintJobExecutionService:
             logger.error(f"Job {job_id} not found.")
             raise ValueError(f"Job {job_id} not found.")
 
+        # Concurrency Check: Ensure job is still pending
+        await self.session.refresh(job)
+        if job.status != JobStatusEnum.PENDING:
+            msg = f"Job {job_id} is already in state {job.status}. Aborting execution."
+            logger.warning(msg)
+            return # Bail out gracefully
+
         # Eager load printer with AMS slots
         printer_query = (
             select(Printer)
@@ -116,7 +123,11 @@ class PrintJobExecutionService:
             try:
                 await self.printer_commander.start_job(printer, job, ams_mapping)
                 
-                # Update Job Status
+                # Success Update
+                # Refresh to ensure we don't overwrite other updates
+                await self.session.refresh(job)
+                await self.session.refresh(printer)
+
                 job.status = JobStatusEnum.PRINTING 
                 
                 # ENGAGE SAFETY LATCH (Plate is now dirty/occupied)

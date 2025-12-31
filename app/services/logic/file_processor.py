@@ -185,31 +185,20 @@ class FileProcessorService:
             if not filaments:
                  filaments = [child for child in plate if "filament" in child.tag]
 
-            if not filaments:
-                 logger.warning("No <filament> tags found in plate. Skipping sync.")
-                 return content
-
-            # FORCE SINGLE ENTRY: Remove all but the first filament
-            # Then overwrite its attributes
-            template_filament = filaments[0]
-            
-            # Remove all filaments from plate
+            # FORCE 4 ENTRIES: Remove all existing filaments
             for f in filaments:
                 plate.remove(f)
             
-            # Create the generic filament
-            # Note: We use 1-based ID for Metadata (Bambu convention)
-            template_filament.set("id", "1")
-            template_filament.set("vendor", "Generic")
-            template_filament.set("type", "PLA")
-            # Clear or set other common attributes if they exist
-            if "color" in template_filament.attrib:
-                template_filament.set("color", "#FFFFFF")
+            # Create 4 generic filaments (IDs 1, 2, 3, 4)
+            for i in range(1, 5):
+                f_elem = ET.Element("filament")
+                f_elem.set("id", str(i))
+                f_elem.set("vendor", "Generic")
+                f_elem.set("type", "PLA")
+                f_elem.set("color", "#FFFFFF")
+                plate.append(f_elem)
             
-            # Re-add just the one
-            plate.append(template_filament)
-            
-            logger.info("Scrubbed manifest: Forced single 'Generic PLA' filament entry.")
+            logger.info("Scrubbed manifest: Forced 4 'Generic PLA' filament entries (Native Strategy).")
 
             return ET.tostring(root, encoding="utf-8", xml_declaration=True)
                 
@@ -253,19 +242,20 @@ class FileProcessorService:
         """
         text = content.decode("utf-8")
         
-        # 1. Regex replace all occurrences of T\d+ with T0.
-        # This makes the file "generic", always asking for logical Tool 0.
-        sanitized_text = re.sub(r'\bT[0-9]+\b', 'T0', text)
+        # 1. Regex replace all occurrences of T\d+ with T{target_index}.
+        # This forces the printer to use the physical slot mapped to target_index.
+        sanitized_text = re.sub(r'\bT[0-9]+\b', f'T{target_index}', text)
         
-        # 2. Construct Injection Sequence (The "Force Swap")
+        # 2. Construct Injection Sequence (The "Native Select")
         injection_sequence = (
-            "\n; --- FACTORYOS TOOL SWAP (Post-Homing) ---\n"
-            "M109 S220      ; 1. Ensure Nozzle is soft (Critical for Cut/Unload)\n"
-            "G1 X20 Y50 F12000 ; 2. Move near cutter (Safety Prep)\n"
-            "M620 S255      ; 3. AMS Reset\n"
-            "T255           ; 4. Logical Tool Reset\n"
-            "T0             ; 5. Load New Tool (Mapped via MQTT)\n"
-            "; -----------------------------------------\n"
+            f"\n; --- FACTORYOS NATIVE SELECT ---\n"
+            f"M1002 gcode_claim_action : 0\n"
+            f"M109 S220      ; Ensure Nozzle soft\n"
+            f"G1 X20 Y50 F12000 ; Move near cutter\n"
+            f"M620 S{target_index}A  ; Select Physical Slot\n"
+            f"T{target_index}        ; Select Tool\n"
+            f"M621 S{target_index}A  ; Sync\n"
+            f"; -----------------------------\n"
         )
         
         # 3. Smart Insertion: Find First G28

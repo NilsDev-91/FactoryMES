@@ -9,14 +9,16 @@ from aiomqtt import Client, MqttError
 import paho.mqtt.client as mqtt_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.database import async_session_maker
-from app.models.core import Printer, PrinterStatusEnum
+from app.models.core import Printer, PrinterStatusEnum, ClearingStrategyEnum, JobStatusEnum
 from app.models.filament import AmsSlot
 from app.services.print_job_executor import PrintJobExecutionService
 from app.services.job_service import JobService
 from app.services.filament_manager import FilamentManager
 from app.services.printer.commander import PrinterCommander
+from app.services.production.bed_clearing_service import BedClearingService
 
 
 logger = logging.getLogger("PrinterMqttWorker")
@@ -145,30 +147,48 @@ class PrinterMqttWorker:
             should_sync = True
             logger.info(f"Status change detected for {serial}: {old_status} -> {new_status}")
             
-        if new_status == "FINISH":
-             # 1. Check if printer supports Auto-Ejection
-             async with async_session_maker() as session:
-                 printer = await session.get(Printer, serial)
-                 if printer and printer.can_auto_eject:
-                     logger.info(f"FMS: Printer {serial} supports Auto-Ejection. Bypassing Manual Clearance Protocol.")
-                     updated_cache["is_plate_cleared"] = True
-                     
-                     # 2. Mark Job as FINISHED immediately
-                     if printer.current_job_id:
-                         job = await session.get(Job, printer.current_job_id)
-                         if job:
-                             logger.info(f"FMS: Force-Finishing Job {job.id} for auto-eject printer {serial}.")
-                             job.status = JobStatusEnum.FINISHED
-                             session.add(job)
-                         
-                         printer.current_job_id = None # Clear active job
-                         session.add(printer)
-                         await session.commit()
-                 else:
-                     logger.warning(f"Print finished on {serial}. Safety Latch ENGAGED (Plate Dirty).")
-                     updated_cache["is_plate_cleared"] = False
-             
-             should_sync = True
+            if new_status == "FINISH":
+                # IF we were EJECTING, this FINISH means the clearing is done
+                # Note: old_status is from current_cache (pre-merge)
+                async with async_session_maker() as session:
+                    printer = await session.get(Printer, serial)
+                    if not printer: return
+
+                    if printer.current_status == PrinterStatusEnum.EJECTING:
+                        logger.info(f"FMS: Ejection complete on {serial}. Transitioning to IDLE. Plate is now CLEARED.")
+                        printer.current_status = PrinterStatusEnum.IDLE
+                        printer.is_plate_cleared = True
+                        session.add(printer)
+                        await session.commit()
+                        updated_cache["is_plate_cleared"] = True
+                        # Do not return, let it flow to queue advance logic
+                    
+                    elif printer.can_auto_eject:
+                        logger.info(f"FMS: Printer {serial} supports Auto-Ejection. Bypassing Manual Clearance Protocol.")
+                        updated_cache["is_plate_cleared"] = True
+                        
+                        # Mark Job as FINISHED
+                        if printer.current_job_id:
+                            job = await session.get(Job, printer.current_job_id)
+                            if job:
+                                logger.info(f"FMS: Force-Finishing Job {job.id} for auto-eject printer {serial}.")
+                                job.status = JobStatusEnum.FINISHED
+                                session.add(job)
+                            
+                            printer.current_job_id = None # Clear active job
+                        
+                        if printer.clearing_strategy != ClearingStrategyEnum.MANUAL:
+                             logger.info(f"FMS: Strategy {printer.clearing_strategy} detected. Transitioning to COOLDOWN.")
+                             printer.current_status = PrinterStatusEnum.COOLDOWN
+                             updated_cache["is_plate_cleared"] = False # Plate is dirty until eject
+                        else:
+                             updated_cache["is_plate_cleared"] = True # Assume manual clear or legacy
+                        
+                        session.add(printer)
+                        await session.commit()
+                    else:
+                        logger.warning(f"Print finished on {serial}. Safety Latch ENGAGED (Plate Dirty).")
+                        updated_cache["is_plate_cleared"] = False
          
         # Check Time
         if (now - last_sync) > 5.0:
@@ -225,8 +245,29 @@ class PrinterMqttWorker:
                 # 2. Update Printer Fields
                 if "gcode_state" in state:
                     status_str = state["gcode_state"]
-                    # Default to IDLE if unknown map
-                    printer.current_status = GCODE_STATE_MAP.get(status_str, PrinterStatusEnum.IDLE)
+                    new_mapped_status = GCODE_STATE_MAP.get(status_str, PrinterStatusEnum.IDLE)
+                    
+                    # THE STATE MACHINE SAFETY LATCH
+                    # If we are in COOLDOWN or EJECTING, do not allow MQTT telemetry to reset us to IDLE/PRINTING 
+                    # until we are actually done with the maintenance task.
+                    if printer.current_status in [PrinterStatusEnum.COOLDOWN, PrinterStatusEnum.EJECTING]:
+                        # Only transition out of COOLDOWN/EJECTING via internal logic or if printer goes OFFLINE
+                        if new_mapped_status == PrinterStatusEnum.OFFLINE:
+                            printer.current_status = PrinterStatusEnum.OFFLINE
+                        else:
+                            # Remain in current maintenance state
+                            logger.debug(f"Printer {serial} is in {printer.current_status}. Ignoring telemetry status {status_str}.")
+                    else:
+                        printer.current_status = new_mapped_status
+                
+                # --- THERMAL MONITORING (COOLDOWN -> EJECTING) ---
+                if printer.current_status == PrinterStatusEnum.COOLDOWN:
+                    current_bed = float(state.get("bed_temper", printer.current_temp_bed))
+                    if current_bed < printer.thermal_release_temp:
+                         logger.info(f"Printer {serial} bed temp ({current_bed}C) reached release threshold ({printer.thermal_release_temp}C). Triggering EJECT.")
+                         printer.current_status = PrinterStatusEnum.EJECTING
+                         # Trigger Ejection in background to not block sync
+                         asyncio.create_task(self._trigger_ejection(serial))
                 
                 if "nozzle_temper" in state:
                     printer.current_temp_nozzle = float(state["nozzle_temper"])
@@ -318,7 +359,10 @@ class PrinterMqttWorker:
             executor = PrintJobExecutionService(session, fms, commander)
             
             # 1. Safety Latch Check (DB Truth)
-            printer = await session.get(Printer, serial)
+            stmt = select(Printer).where(Printer.serial == serial).options(selectinload(Printer.ams_slots))
+            result = await session.execute(stmt)
+            printer = result.scalars().first()
+            
             if not printer:
                 logger.error(f"Printer {serial} not found during queue processing.")
                 return
@@ -349,3 +393,36 @@ class PrinterMqttWorker:
                 
             except Exception as e:
                 logger.error(f"Unexpected error executing Job {job.id} on {serial}: {e}")
+
+    async def _trigger_ejection(self, serial: str):
+        """
+        Orchestrates the physical ejection of the part.
+        """
+        try:
+            async with async_session_maker() as session:
+                printer = await session.get(Printer, serial)
+                if not printer: return
+
+                clearing_service = BedClearingService()
+                commander = PrinterCommander()
+
+                # 1. Generate Ejection 3MF
+                maint_3mf_path = clearing_service.create_maintenance_3mf(printer)
+
+                # 2. Start Maintenance Job
+                try:
+                    await commander.start_maintenance_job(printer, maint_3mf_path)
+                    logger.info(f"Ejection job triggered for {serial}.")
+                finally:
+                    # Cleanup local temp file
+                    if maint_3mf_path.exists():
+                        maint_3mf_path.unlink()
+
+        except Exception as e:
+            logger.error(f"Ejection trigger failed for {serial}: {e}", exc_info=True)
+            async with async_session_maker() as session:
+                printer = await session.get(Printer, serial)
+                if printer:
+                    printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE # Fallback to manual
+                    session.add(printer)
+                    await session.commit()

@@ -219,7 +219,7 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                         {/* Status Text & CLEAR PLATE Action */}
                         <div className={cn("flex items-center gap-2", config.text)}>
                             {isPrinting && `${progress}%`}
-                            {isAwaitingClearance && (
+                            {isAwaitingClearance && !printer.can_auto_eject && (
                                 <button
                                     onClick={handleClearance}
                                     disabled={isClearing}
@@ -227,6 +227,12 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                                 >
                                     {isClearing ? <Loader2 size={10} className="animate-spin" /> : "DONE - CLEAR PLATE"}
                                 </button>
+                            )}
+                            {isAwaitingClearance && printer.can_auto_eject && (
+                                <div className="flex items-center gap-1 text-emerald-500 animate-pulse cursor-default">
+                                    <Loader2 size={10} className="animate-spin" />
+                                    <span>AUTO CLEARING</span>
+                                </div>
                             )}
                             {!isPrinting && !isAwaitingClearance && status.toUpperCase().replace('_', ' ')}
                         </div>

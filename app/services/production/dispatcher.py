@@ -151,7 +151,13 @@ class ProductionDispatcher:
         Locks the job/printer and triggers execution.
         """
         try:
-            # --- LOCKING ---
+            # --- LOCKING & VALIDATION ---
+            # Refresh to get latest DB status (preventing race with MQTT worker/dispatcher loop)
+            await session.refresh(job)
+            if job.status != JobStatusEnum.PENDING:
+                logger.warning(f"Job {job.id} is no longer PENDING (Status: {job.status}). Aborting assignment.")
+                return
+
             printer = await session.get(Printer, printer_serial)
             if not printer or printer.current_status != PrinterStatusEnum.IDLE:
                  logger.warning(f"Printer {printer_serial} no longer IDLE. Aborting assignment.")
@@ -182,6 +188,10 @@ class ProductionDispatcher:
                 await self.commander.start_job(printer, job, ams_mapping)
                 
                 # Success Update
+                # Refresh to ensure we don't overwrite telemetry updates from MQTT worker
+                await session.refresh(job)
+                await session.refresh(printer)
+                
                 job.status = JobStatusEnum.PRINTING
                 session.add(job)
                 await session.commit()

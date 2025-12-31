@@ -20,4 +20,6 @@ export interface Printer {
     ams_inventory?: AmsSlot[]; // Legacy or New? Backend says ams_slots usually. Prompt says ams_inventory.
     ams_slots?: AmsSlot[]; // Support both for safety during migration
     is_plate_cleared?: boolean;
+    hardware_model?: string;
+    can_auto_eject?: boolean;
 }

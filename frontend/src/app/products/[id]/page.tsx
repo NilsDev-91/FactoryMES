@@ -6,7 +6,18 @@ import { Package, Upload, FileText, CheckCircle2, AlertTriangle, ArrowLeft, Load
 import Link from 'next/link';
 import useSWR from 'swr';
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const fetcher = async (url: string) => {
+    const res = await fetch(url);
+    if (!res.ok) {
+        const error = new Error('An error occurred while fetching the data.');
+        // @ts-ignore
+        error.info = await res.json();
+        // @ts-ignore
+        error.status = res.status;
+        throw error;
+    }
+    return res.json();
+};
 
 export default function EditProductPage() {
     const router = useRouter();
@@ -35,8 +46,8 @@ export default function EditProductPage() {
     // Pre-fill form when data loads
     useEffect(() => {
         if (product && !formReady) {
-            setName(product.name);
-            setSku(product.sku);
+            setName(product.name || '');
+            setSku(product.sku || '');
             setDescription(product.description || '');
             setMaterial(product.required_filament_type || 'PLA');
             setColorHex(product.required_filament_color || '#ffffff');

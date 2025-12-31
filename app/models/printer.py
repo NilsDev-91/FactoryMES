@@ -1,6 +1,6 @@
 from typing import Optional, List
 from pydantic import BaseModel
-from .core import PrinterStatusEnum, PrinterTypeEnum
+from .core import PrinterStatusEnum, PrinterTypeEnum, ClearingStrategyEnum
 
 class AmsSlotRead(BaseModel):
     ams_index: int
@@ -23,6 +23,11 @@ class PrinterRead(BaseModel):
     current_progress: int
     remaining_time: int
     is_plate_cleared: bool
+    # NEW FIELDS:
+    hardware_model: Optional[str] = "GENERIC"
+    can_auto_eject: bool
+    clearing_strategy: ClearingStrategyEnum
+    thermal_release_temp: float
     ams_slots: List[AmsSlotRead] = []
 
     class Config:
