@@ -11,21 +11,41 @@ class JobService:
     async def get_next_pending_job(self, session: AsyncSession) -> Optional[Job]:
         """
         Retrieves the oldest PENDING job.
-        Future enhancements could include priority or material matching logic.
+        Note: This is still used by the dispatcher for global scheduling.
         """
-        # Order by Created At Ascending (FIFO)
-        # Verify if 'priority' exists? Requirements mentioned Priority but model might not have it.
-        # Verified Job model earlier: id, order_id, status, filament_requirements, created_at.
-        # No 'priority' field in Job model seen in core.py. 
-        # Requirement said: "Create Print Job 1: Priority 10". 
-        # If I didn't add Priority to model, I can't sort by it.
-        # I will check if I missed 'priority' in Job model.
-        # If missing, I will stick to FIFO (created_at).
-
         statement = (
             select(Job)
             .where(Job.status == JobStatusEnum.PENDING)
             .order_by(Job.priority.desc(), Job.created_at.asc())
         )
-        result = await session.exec(statement)
-        return result.first()
+        result = await session.execute(statement) # Fixed: session.exec -> session.execute
+        return result.scalars().first()
+
+    async def get_next_compatible_job_for_printer(
+        self, 
+        session: AsyncSession, 
+        printer: Printer, 
+        filament_manager: any
+    ) -> Optional[Job]:
+        """
+        Peeks at the top of the queue and finds the first job this printer can handle.
+        Bypasses deadlocks where an incompatible job blocks the FIFO queue.
+        """
+        # Fetch top N to find a compatible one without scanning the entire DB
+        statement = (
+            select(Job)
+            .where(Job.status == JobStatusEnum.PENDING)
+            .order_by(Job.priority.desc(), Job.created_at.asc())
+            .limit(10)
+        )
+        result = await session.execute(statement)
+        jobs = result.scalars().all()
+
+        for job in jobs:
+            if filament_manager.can_printer_print_job(printer, job):
+                return job
+            else:
+                import logging
+                logging.getLogger("JobService").debug(f"Skipping Job {job.id} for Printer {printer.serial} (Filament Mismatch)")
+        
+        return None

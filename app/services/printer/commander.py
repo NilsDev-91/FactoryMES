@@ -5,9 +5,12 @@ import ssl
 import json
 import logging
 import aioftp
+from pathlib import Path
 from typing import List, Optional
-from gmqtt import Client as MQTTClient
+from aiomqtt import Client
+import paho.mqtt.client as mqtt_base
 from app.models.core import Printer, Job
+from app.services.logic.file_processor import FileProcessorService
 
 logger = logging.getLogger("PrinterCommander")
 
@@ -20,23 +23,22 @@ def debug_log(msg):
 
 class PrinterCommander:
     def __init__(self):
-        pass
-
+        logger.info("PrinterCommander Initialized (v2.1 - 3MF Sanitization Active + aiomqtt)")
 
     async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int]) -> None:
         """
         High-level orchestrator to start a print job.
-        1. Uploads GCode/3MF to printer via FTPS.
-        2. Triggers print via MQTT if upload succeeds.
+        1. Sanitizes the 3MF file (removes color metadata).
+        2. Uploads sanitized file to printer via FTPS.
+        3. Triggers print via MQTT.
+        4. Cleans up temporary sanitized file.
         """
         if not printer.ip_address or not printer.access_code:
             raise ValueError(f"Printer {printer.serial} missing IP or Access Code")
 
         # Determine file path
-        # Prefer specific job path, fallback to product path
         file_path = job.gcode_path
         if not file_path:
-            # Try getting from product if lazy loaded or available
             product = getattr(job, "product", None)
             if product:
                 file_path = product.file_path_3mf
@@ -44,24 +46,41 @@ class PrinterCommander:
         if not file_path:
             raise ValueError(f"No file path found for Job {job.id}")
             
-        # Normalize Path (Fix Windows backslashes)
+        # Normalize Path
         file_path = file_path.replace("\\", "/")
         
-        # Pre-Flight Check
         if not os.path.exists(file_path):
             logger.error(f"File not found on disk: {file_path}")
             raise FileNotFoundError(f"Source file missing: {file_path}")
 
         filename = file_path.split("/")[-1].split("\\")[-1]
         
-        # Unique Remote Filename to prevent Caching/Stale Files
+        # Unique Remote Filename
         import time
         remote_filename = f"{filename.replace('.3mf', '')}_{int(time.time())}.3mf"
 
+        sanitizer = FileProcessorService()
+        sanitized_path: Optional[Path] = None
+        
         try:
-            # 1. Upload File
-            # 1. Upload File (With Retry)
-            logger.info(f"Starting upload for Job {job.id} to {printer.serial} as {remote_filename}...")
+            # 1. Sanitize (T0 Master Protocol)
+            # target_slot is 1-based (1-4). ams_index is 0-based (0-3).
+            target_slot = ams_mapping[0]
+            ams_index = max(0, target_slot - 1)
+
+            logger.info(f"Sanitizing file for Job {job.id}: {file_path} -> T0 Master (Target: Slot {target_slot})")
+            sanitized_path = await sanitizer.sanitize_and_repack(Path(file_path), target_index=ams_index, printer_type=printer.type)
+            upload_source_path = str(sanitized_path)
+            
+            # T0 Master Mapping: Logical T0 -> Physical ams_index
+            # We only need to map the first tool (index 0) because G-code only uses T0.
+            final_mapping = [ams_index] 
+            
+            logger.info(f"Mapping Logical T0 -> Physical AMS Index {ams_index} (Slot {target_slot})")
+            logger.info(f"Sanitized {filename} -> Uploading {remote_filename} with Mapping {final_mapping}")
+
+            # 2. Upload File (With Retry)
+            logger.info(f"Starting upload for Job {job.id} to {printer.serial}...")
             upload_success = False
             last_error = None
             for attempt in range(1, 4):
@@ -69,7 +88,7 @@ class PrinterCommander:
                     await self.upload_file(
                         ip=printer.ip_address, 
                         access_code=printer.access_code, 
-                        local_path=file_path, 
+                        local_path=upload_source_path, 
                         target_filename=remote_filename
                     )
                     upload_success = True
@@ -82,7 +101,7 @@ class PrinterCommander:
             if not upload_success:
                  raise Exception(f"Upload Failed after 3 attempts: {last_error}") from last_error
 
-            # 2. Start Print
+            # 3. Start Print
             logger.info(f"Triggering MQTT print for Job {job.id} on {printer.serial}...")
             try:
                 await self.start_print_job(
@@ -90,8 +109,8 @@ class PrinterCommander:
                     serial=printer.serial,
                     access_code=printer.access_code,
                     filename=remote_filename,
-                    ams_mapping=ams_mapping,
-                    local_file_path=file_path 
+                    ams_mapping=final_mapping,
+                    local_file_path=upload_source_path 
                 )
             except Exception as e:
                 raise Exception(f"MQTT Start Failed: {e}") from e
@@ -101,6 +120,14 @@ class PrinterCommander:
         except Exception as e:
             logger.error(f"Failed to start Job {job.id} on {printer.serial}: {e}")
             raise e
+        finally:
+            # 4. Cleanup
+            if sanitized_path and sanitized_path.exists():
+                try:
+                    sanitized_path.unlink()
+                    logger.debug(f"Cleaned up temporary file: {sanitized_path}")
+                except Exception as ex:
+                    logger.warning(f"Failed to cleanup temp file {sanitized_path}: {ex}")
 
     async def upload_file(self, ip: str, access_code: str, local_path: str, target_filename: str) -> None:
         """
@@ -225,119 +252,100 @@ class PrinterCommander:
 
         logger.info(f"Sending Print Command to {serial} ({ip})...")
         
-        client = MQTTClient(client_id=f"commander_{serial}")
-        client.set_auth_credentials("bblp", access_code)
-        
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         
-        connected_event = asyncio.Event()
-        
-        def on_connect(client, flags, rc, properties):
-            logger.debug("MQTT Connected")
-            connected_event.set()
-            
-        client.on_connect = on_connect
-        
         try:
-            await client.connect(ip, 8883, ssl=context)
-            await _async_wait(connected_event) # Wait for connection
-            
-            topic = f"device/{serial}/request"
-            
-            # Determine Local IP for the URL param (placeholder logic)
-            # In production, get this from os.environ or socket
-            import socket
-            try:
-                # get host ip (rough approximation)
-                local_ip = socket.gethostbyname(socket.gethostname())
-            except:
-                local_ip = "192.168.1.100"
-
-            # Construct internal SD path (where upload_file put it)
-            # upload_file uses /sdcard/factoryos/
-            sd_path = f"/sdcard/factoryos/{filename}"
-            
-            # --- AUTO-DETECT GCODE PATH ---
-            # Open local source file to find the correct GCode path (plate_1 vs plate_3 etc)
-            gcode_param = "Metadata/plate_1.gcode" # Default backup
-            
-            potential_paths = []
-            if local_file_path:
-                 potential_paths.append(local_file_path)
-            
-            potential_paths += [
-                f"storage/3mf/{filename}",
-                f"temp/{filename}",
-                filename
-            ]
-            
-            found_local = None
-            for p in potential_paths:
-                if os.path.exists(p):
-                    found_local = p
-                    break
-            
-            if found_local:
+            async with Client(
+                hostname=ip,
+                port=8883,
+                username="bblp",
+                password=access_code,
+                tls_context=context,
+                protocol=mqtt_base.MQTTv311, # FORCE 3.1.1
+                identifier=f"commander_{serial}",
+                timeout=30.0
+            ) as client:
+                
+                logger.debug("MQTT Connected")
+                
+                topic = f"device/{serial}/request"
+                
+                # Determine Local IP for the URL param (placeholder logic)
+                import socket
                 try:
-                    import zipfile
-                    with zipfile.ZipFile(found_local, 'r') as z:
-                        for name in z.namelist():
-                            if name.startswith("Metadata/") and name.endswith(".gcode"):
-                                gcode_param = name
-                                logger.info(f"Auto-detected GCode path: {gcode_param}")
-                                break
-                except Exception as e:
-                    logger.warning(f"Failed to inspect 3MF for GCode path: {e}")
-            else:
-                 logger.warning(f"Could not find local file {filename} to verify GCode path. Using default.")
+                    local_ip = socket.gethostbyname(socket.gethostname())
+                except:
+                    local_ip = "192.168.1.100"
 
-            # Payload matching Bambu Lab 3MF requirement
+                # Construct internal SD path (where upload_file put it)
+                sd_path = f"/sdcard/factoryos/{filename}"
+                
+                # --- AUTO-DETECT GCODE PATH ---
+                gcode_param = "Metadata/plate_1.gcode" # Default backup
+                
+                potential_paths = []
+                if local_file_path:
+                     potential_paths.append(local_file_path)
+                
+                potential_paths += [
+                    f"storage/3mf/{filename}",
+                    f"temp/{filename}",
+                    filename
+                ]
+                
+                found_local = None
+                for p in potential_paths:
+                    if os.path.exists(p):
+                        found_local = p
+                        break
+                
+                if found_local:
+                    try:
+                        import zipfile
+                        with zipfile.ZipFile(found_local, 'r') as z:
+                            for name in z.namelist():
+                                if name.startswith("Metadata/") and name.endswith(".gcode"):
+                                    gcode_param = name
+                                    logger.info(f"Auto-detected GCode path: {gcode_param}")
+                                    break
+                    except Exception as e:
+                        logger.warning(f"Failed to inspect 3MF for GCode path: {e}")
+                else:
+                     logger.warning(f"Could not find local file {filename} to verify GCode path. Using default.")
 
-            # url: The file path on the SD card (file:///sdcard/...)
-            # param: Usually "Metadata/plate_1.gcode" but can be empty/generic for some FW
-            # md5: Can be null
-            payload = {
-                "print": {
-                    "sequence_id": "2000",
-                    "command": "project_file",
-                    "param": gcode_param, 
-                    "url": f"file:///sdcard/factoryos/{filename}", 
-                    "md5": None,
-                    "timelapse": False,
-                    "bed_type": "auto", 
-                    "bed_levelling": True,
-                    "flow_cali": True,
-                    "vibration_cali": True,
-                    "layer_inspect": True,
-                    "use_ams": True,
-                    "ams_mapping": ams_mapping
+                # Payload matching Bambu Lab 3MF requirement
+                payload = {
+                    "print": {
+                        "sequence_id": "2000",
+                        "command": "project_file",
+                        "param": gcode_param, 
+                        "url": f"file:///sdcard/factoryos/{filename}", 
+                        "md5": None,
+                        "timelapse": False,
+                        "bed_type": "auto", 
+                        "bed_levelling": True,
+                        "flow_cali": True,
+                        "vibration_cali": True,
+                        "layer_inspect": True,
+                        "layer_inspect": True,
+                        "use_ams": True,
+                        # STRICTLY SINGLE ENTRY as per requirements for sanitized files
+                        "ams_mapping": ams_mapping 
+                    }
                 }
-            }
-            
-            # Log as requested
-            debug_log(f"MQTT PAYLOAD: {json.dumps(payload)}")
-            logger.info(f"📡 SENDING MQTT CMD: {payload}")
-            
-            # Log as requested
-            logger.info(f"📡 SENDING MQTT CMD: {payload}")
-            
-            client.publish(topic, json.dumps(payload))
-            logger.info("Print payload published.")
-            
-            # Brief wait to ensure send
-            await asyncio.sleep(0.5)
-            
-            await client.disconnect()
+                
+                # Log as requested
+                debug_log(f"MQTT PAYLOAD: {json.dumps(payload)}")
+                logger.info(f"📡 SENDING MQTT CMD: {payload}")
+                
+                await client.publish(topic, json.dumps(payload))
+                logger.info("Print payload published.")
+                
+                # Brief wait to ensure send
+                await asyncio.sleep(0.5)
             
         except Exception as e:
             logger.error(f"MQTT Command Failed: {e}")
             raise e
-
-# Helper for waiting
-async def _async_wait(event: asyncio.Event, timeout=30):
-    try:
-        await asyncio.wait_for(event.wait(), timeout)
-    except asyncio.TimeoutError:
-         raise TimeoutError("MQTT Connection Timeout")

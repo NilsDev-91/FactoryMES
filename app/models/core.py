@@ -56,6 +56,7 @@ class Printer(SQLModel, table=True):
     current_temp_nozzle: float = Field(default=0.0)
     current_temp_bed: float = Field(default=0.0)
     is_plate_cleared: bool = Field(default=True)
+    can_auto_eject: bool = Field(default=False)
     
     current_progress: int = Field(default=0) # Percentage 0-100
     remaining_time: int = Field(default=0) # Minutes

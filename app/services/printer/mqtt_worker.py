@@ -5,7 +5,8 @@ import logging
 import ssl
 import time
 from typing import Dict, Any, Optional
-from gmqtt import Client as MQTTClient, constants
+from aiomqtt import Client, MqttError
+import paho.mqtt.client as mqtt_base
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -31,7 +32,7 @@ GCODE_STATE_MAP = {
 
 class PrinterMqttWorker:
     def __init__(self):
-        self._clients: Dict[str, MQTTClient] = {}
+        self._clients: Dict[str, Client] = {}
         self._state_cache: Dict[str, dict] = {} # Serial -> Full State Dict
         self._last_sync_time: Dict[str, float] = {} # Serial -> Timestamp
         self._background_tasks = set() # Prevent GC of running tasks
@@ -50,96 +51,68 @@ class PrinterMqttWorker:
 
     async def _run_client(self, ip: str, access_code: str, serial: str):
         """
-        Main loop for a single printer connection.
+        Main loop for a single printer connection using aiomqtt.
         """
-        client = MQTTClient(client_id=f"worker_{serial}")
-        client.set_auth_credentials("bblp", access_code)
         
         # Setup SSL
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
 
-        # Callbacks
-        client.on_message = self._create_on_message(serial)
-        client.on_connect = self._create_on_connect(serial)
-        client.on_disconnect = self._create_on_disconnect(serial)
-
         # OUTER LOOP: Ensure task NEVER dies, even on unforeseen crashes
         while True: 
             try:
-                # INNER LOOP: Connection Logic
-                while True:
-                    try:
-                        logger.info(f"Connecting to {serial} at {ip}:8883 (SSL)...")
+                logger.info(f"Connecting to {serial} at {ip}:8883 (SSL/MQTT 3.1.1)...")
+                
+                try:
+                    async with Client(
+                        hostname=ip,
+                        port=8883,
+                        username="bblp",
+                        password=access_code,
+                        tls_context=context,
+                        protocol=mqtt_base.MQTTv311, # FORCE 3.1.1 (Critical for Bambu)
+                        identifier=f"worker_{serial}",
+                        keepalive=30,
+                        timeout=30.0
+                    ) as client:
                         
-                        # Increased timeout to 30.0s for better stability on busy networks
-                        try:
-                            await asyncio.wait_for(
-                                client.connect(ip, 8883, ssl=context, version=constants.MQTTv311, keepalive=30),
-                                timeout=30.0
-                            )
-                        except asyncio.TimeoutError:
-                            logger.error(f"Printer Connection TIMEOUT: {serial} at {ip} did not respond within 30s.")
-                            raise
-                        except ConnectionRefusedError:
-                            logger.error(f"Printer Connection REFUSED: {serial} at {ip}. Is the printer online and MQTT enabled?")
-                            raise
-                        except (OSError, ConnectionResetError) as e:
-                             logger.error(f"Printer Socket Error: {e}. Retrying...")
-                             raise
-                        except Exception as e:
-                            logger.error(f"Printer Connection FAILED: {serial} at {ip} with error: {type(e).__name__}: {e}")
-                            raise
-                        
-                        # Keep alive until disconnect
-                        STOP = asyncio.Event()
                         self._clients[serial] = client
+                        logger.info(f"Connected to {serial}")
                         
-                        await STOP.wait()
+                        # Subscribe
+                        topic = f"device/{serial}/report"
+                        await client.subscribe(topic, qos=0)
+                        logger.debug(f"Subscribed to {topic}")
 
-                    except (asyncio.TimeoutError, OSError, ConnectionResetError):
-                        # Transient Network Errors -> Fast Retry
-                        logger.info(f"Connection lost/failed for {serial}. Retrying in 5s...")
-                        await asyncio.sleep(5)
-                        
-                    except Exception as e:
-                        # Logic/Protocol Errors -> Slower Retry
-                        logger.error(f"Worker Loop Error for {serial}: {e}")
-                        logger.info(f"Retrying connection to {serial} in 10s...")
-                        await asyncio.sleep(10)
-                        
-                    finally:
-                        try:
-                            await client.disconnect()
-                        except:
-                            pass
-                        if serial in self._clients:
-                             del self._clients[serial]
-                             
+                        # Message Loop
+                        async for message in client.messages:
+                            try:
+                                payload = message.payload
+                                if isinstance(payload, bytes):
+                                    payload = payload.decode()
+                                    
+                                data = json.loads(payload)
+                                # Async handling to not block the message loop
+                                asyncio.create_task(self._handle_message(serial, data))
+                                
+                            except Exception as e:
+                                logger.error(f"Error processing message from {serial}: {e}")
+
+                except MqttError as e:
+                     logger.warning(f"MQTT Connection lost for {serial}: {e}. Reconnecting in 5s...")
+                except Exception as e:
+                     logger.error(f"Unexpected MQTT Error for {serial}: {e}. Reconnecting in 5s...")
+                
+                # Cleanup logic if loop exits
+                if serial in self._clients:
+                    del self._clients[serial]
+                
+                await asyncio.sleep(5)
+
             except Exception as critical_e:
                 logger.critical(f"CRITICAL: Outer Loop Crash for {serial}: {critical_e}. Restarting entire loop in 5s...", exc_info=True)
                 await asyncio.sleep(5)
-
-    def _create_on_connect(self, serial: str):
-        def on_connect(client, flags, rc, properties):
-            logger.info(f"Connected to {serial}")
-            client.subscribe(f"device/{serial}/report", qos=0)
-        return on_connect
-
-    def _create_on_disconnect(self, serial: str):
-        def on_disconnect(client, packet, exc=None):
-            logger.warning(f"Disconnected from {serial}")
-        return on_disconnect
-
-    def _create_on_message(self, serial: str):
-        def on_message(client, topic, payload, qos, properties):
-            try:
-                data = json.loads(payload)
-                asyncio.create_task(self._handle_message(serial, data))
-            except Exception as e:
-                logger.error(f"Error handling message from {serial}: {e}")
-        return on_message
 
     async def _handle_message(self, serial: str, message: dict):
         """
@@ -173,8 +146,28 @@ class PrinterMqttWorker:
             logger.info(f"Status change detected for {serial}: {old_status} -> {new_status}")
             
         if new_status == "FINISH":
-             logger.warning(f"Print finished on {serial}. Safety Latch ENGAGED (Plate Dirty).")
-             updated_cache["is_plate_cleared"] = False
+             # 1. Check if printer supports Auto-Ejection
+             async with async_session_maker() as session:
+                 printer = await session.get(Printer, serial)
+                 if printer and printer.can_auto_eject:
+                     logger.info(f"FMS: Printer {serial} supports Auto-Ejection. Bypassing Manual Clearance Protocol.")
+                     updated_cache["is_plate_cleared"] = True
+                     
+                     # 2. Mark Job as FINISHED immediately
+                     if printer.current_job_id:
+                         job = await session.get(Job, printer.current_job_id)
+                         if job:
+                             logger.info(f"FMS: Force-Finishing Job {job.id} for auto-eject printer {serial}.")
+                             job.status = JobStatusEnum.FINISHED
+                             session.add(job)
+                         
+                         printer.current_job_id = None # Clear active job
+                         session.add(printer)
+                         await session.commit()
+                 else:
+                     logger.warning(f"Print finished on {serial}. Safety Latch ENGAGED (Plate Dirty).")
+                     updated_cache["is_plate_cleared"] = False
+             
              should_sync = True
          
         # Check Time
@@ -315,7 +308,8 @@ class PrinterMqttWorker:
 
     async def _process_queue_for_printer(self, serial: str):
         """
-        Auto-Advance Logic: Find pending jobs and execute them.
+        Auto-Advance Logic: Find compatible pending jobs and execute.
+        Bypasses deadlocks by peeking for the first compatible job.
         """
         async with async_session_maker() as session:
             job_service = JobService()
@@ -323,7 +317,7 @@ class PrinterMqttWorker:
             commander = PrinterCommander()
             executor = PrintJobExecutionService(session, fms, commander)
             
-            # Safety Latch Check (DB Truth)
+            # 1. Safety Latch Check (DB Truth)
             printer = await session.get(Printer, serial)
             if not printer:
                 logger.error(f"Printer {serial} not found during queue processing.")
@@ -333,33 +327,25 @@ class PrinterMqttWorker:
                 logger.warning(f"Printer {serial} IDLE, but Plate is Dirty. Waiting for operator release.")
                 return 
 
-            # Retry Loop (limit 5 attempts to avoid infinite churning on bad queue)
-            for _ in range(5):
-                job = await job_service.get_next_pending_job(session)
-                if not job:
-                    logger.info(f"No pending jobs found for {serial}.")
-                    break
+            # 2. Smart Peeking: Find a job this printer can actually print
+            job = await job_service.get_next_compatible_job_for_printer(session, printer, fms)
+            
+            if not job:
+                # 3. Smart Backoff: Avoid spinning CPU if no compatible jobs exist
+                logger.info(f"No compatible jobs found for {serial}. Cooling down (10s backoff)...")
+                await asyncio.sleep(10)
+                return
+
+            logger.info(f"Found compatible Job {job.id} for {serial}. Attempting execution...")
+            
+            try:
+                # 4. Execute (this checks FMS and dispatches)
+                await executor.execute_print_job(job.id, serial)
+                logger.info(f"Job {job.id} successfully started on {serial}.")
                 
-                logger.info(f"Found Job {job.id} for {serial}. Attempting execution...")
+            except ValueError as e:
+                # Domain error (e.g. material mismatch confirmed during dispatch)
+                logger.warning(f"Failed to execute compatible Job {job.id} on {serial}: {e}")
                 
-                try:
-                    # Execute (this checks FMS and dispatches)
-                    await executor.execute_print_job(job.id, serial)
-                    logger.info(f"Job {job.id} successfully started on {serial}.")
-                    break # Success, stop loop
-                    
-                except ValueError as e:
-                    # Mismatch or other domain error.
-                    # Executor already updates Job Status to FAILED/MATERIAL_MISMATCH.
-                    # We just log and continue to next job.
-                    logger.warning(f"Skipping Job {job.id} due to error: {e}")
-                    continue
-                    
-                except Exception as e:
-                    logger.error(f"Unexpected error executing Job {job.id}: {e}")
-                    # Job might rely on Executor's internal error handling to set FAILED.
-                    # If Executor raised creates unhandled state, ensure we don't loop forever on same job.
-                    # If job valid but failing systematically, we should probably SKIP it or it stays PENDING?
-                    # Executor `execute_print_job` updates status to FAILED on generic exception too.
-                    # So it shouldn't be PENDING anymore.
-                    continue
+            except Exception as e:
+                logger.error(f"Unexpected error executing Job {job.id} on {serial}: {e}")

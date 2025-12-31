@@ -57,6 +57,9 @@ async def setup_live_test():
         await session.exec(delete(OrderItem))
         await session.exec(delete(Order))
         print("✅ Production Queue & Orders Cleared.")
+        
+        print("⏳ Waiting 5 seconds before seeding new orders...")
+        await asyncio.sleep(5)
 
         # =================================================================================================
         # 3. Strict Catalog Validation

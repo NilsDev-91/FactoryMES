@@ -21,7 +21,7 @@ if %errorlevel% neq 0 (
 echo [OK] Docker is running.
 
 REM ====================================================
-REM 0. SAFETY CHECKS
+REM 0. SAFETY CHECKS & UPDATES
 REM ====================================================
 echo [PRE-FLIGHT] Checking Safety...
 
@@ -36,31 +36,30 @@ if not exist ".env" (
 if not exist ".venv\Scripts\activate.bat" (
     echo [INFO] Virtual Environment not found. Creating one...
     python -m venv .venv
-    echo [INFO] Activating and installing dependencies...
-    call .venv\Scripts\activate.bat
-    pip install -r requirements.txt
-) else (
-    echo [OK] Virtual Environment found.
+)
+
+echo [INFO] Activating and updating dependencies...
+call .venv\Scripts\activate.bat
+echo [INFO] Installing/Updating Python requirements...
+pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo [WARNING] Pip install failed. Please check requirements.txt.
 )
 
 REM ====================================================
-REM 0.5 CLEANUP / RESTART
+REM 0.5 CLEANUP / RESTART (Robust)
 REM ====================================================
 echo [PRE-FLIGHT] Cleaning up old processes...
-REM Kill Process on Port 8001 (Backend)
-for /f "tokens=5" %%a in ('netstat -aon ^| find ":8001" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
-REM Kill Process on Port 8000 (Backend)
-for /f "tokens=5" %%a in ('netstat -aon ^| find ":8000" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
-REM Kill Process on Port 3000 (Frontend)
-for /f "tokens=5" %%a in ('netstat -aon ^| find ":3000" ^| find "LISTENING"') do taskkill /f /pid %%a >nul 2>&1
-echo [OK] Ports 8000, 8001 and 3000 cleared.
+echo [INFO] Killing processes on Ports 8000, 8001, 3000...
+call npx -y kill-port 8000 8001 3000
+echo [OK] Ports cleared.
 
 REM ====================================================
 REM 1. START DATABASE
 REM ====================================================
 echo.
 echo [1/3] Starting Database Infrastructure...
-docker-compose up -d
+docker-compose up -d db
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to start Docker containers.
     pause
@@ -83,10 +82,8 @@ REM ====================================================
 echo.
 echo [3/3] Launching Frontend Dashboard...
 cd frontend
-if not exist "node_modules" (
-    echo [INFO] node_modules not found. Installing dependencies...
-    cmd /c "npm install"
-)
+echo [INFO] Installing/Updating Frontend dependencies...
+cmd /c "npm install"
 start "FactoryOS Frontend" cmd /k "npm run dev"
 cd ..
 

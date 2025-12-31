@@ -31,13 +31,19 @@ def inspect_gcode():
                 print("❌ No GCode found in Metadata/")
                 return
 
-            print("\n----- INSPECTING CONFIGS -----")
-            targets = ["Metadata/filament_sequence.json", "Metadata/slice_info.config", "Metadata/plate_3.json"]
-            for target in targets:
-                if target in z.namelist():
-                    print(f"\n📂 Reading {target}...")
-                    with z.open(target) as f:
-                        print(f.read().decode('utf-8')[:1000]) # First 1000 chars
+            print("\n----- INSPECTING 3D MODEL -----")
+            target = "3D/3dmodel.model"
+            if target in z.namelist():
+                print(f"\n📂 Reading {target}...")
+                with z.open(target) as f:
+                    xml_content = f.read().decode('utf-8')
+                    print(xml_content[:2000])
+                    
+                    # Search for color
+                    import re
+                    colors = re.findall(r'color="#[0-9A-Fa-f]{6,8}"', xml_content)
+                    if colors:
+                        print(f"\n🎨 Founds Colors: {colors}")
 
     except Exception as e:
         print(f"❌ Error: {e}")

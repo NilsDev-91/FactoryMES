@@ -102,3 +102,49 @@ class FilamentManager:
                     best_match_idx = slot.ams_index * 4 + slot.slot_index
 
         return best_match_idx
+
+    def can_printer_print_job(self, printer: any, job: any) -> bool:
+        """
+        Determines if a printer is PHYSICALLY capable of printing a job based on loaded filaments.
+        Checks for material type (PLA/PETG) and color (Delta E < 5.0).
+        """
+        # 1. Get Job Requirements
+        reqs = job.filament_requirements
+        if not reqs:
+            return True # No requirements, safe to print
+        
+        # Normalize reqs to list
+        if isinstance(reqs, dict):
+            reqs = [reqs]
+        
+        # 2. Iterate requirements
+        for req in reqs:
+            target_hex = req.get("color_hex") or req.get("hex_color") or req.get("color")
+            target_material = req.get("material", "PLA").upper()
+            
+            if not target_hex:
+                continue
+            
+            # 3. Check for match in printer slots
+            match_found = False
+            for slot in printer.ams_slots:
+                if not slot.tray_color or not slot.tray_type:
+                    continue
+                
+                # Material Match
+                if slot.tray_type.upper() != target_material:
+                    continue
+                
+                # Color Match
+                try:
+                    de = calculate_delta_e(slot.tray_color, target_hex)
+                    if de < 5.0:
+                        match_found = True
+                        break
+                except Exception:
+                    continue
+            
+            if not match_found:
+                return False # One requirement not met
+        
+        return True

@@ -90,6 +90,22 @@ def sanitize_3mf():
                     with open(full_path, 'w', encoding='utf-8') as f:
                          f.write(content)
 
+            # PATCH 3D Model Colors (Nuclear Option II)
+            if file.endswith(".model"):
+                full_path = os.path.join(root, file)
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Replace Bambu Red (#C12E1F) with White (#FFFFFF)
+                # Helper to replace case-insensitive
+                original_content = content
+                content = re.sub(r'#C12E1F', '#FFFFFF', content, flags=re.IGNORECASE)
+                
+                if content != original_content:
+                     print(f"   🎨 Repainted {file}: Red -> White")
+                     with open(full_path, 'w', encoding='utf-8') as f:
+                         f.write(content)
+
     if not found_gcode:
         print("⚠️ No GCode files found/patched.")
         # We proceed anyway if we removed configs? No, let's keep GCode restriction for now.

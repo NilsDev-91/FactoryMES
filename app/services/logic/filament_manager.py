@@ -195,13 +195,35 @@ class FilamentManager:
 
         # Step C & D: Iterate and Match
         for printer in candidates:
-            ams_mapping = self._match_printer(printer, requirements)
+            # ams_mapping = self._match_printer(printer, requirements)
+            ams_mapping = self.get_ams_mapping(printer, job, product)
             if ams_mapping is not None:
                 logger.info(f"FMS: Match FOUND on {printer.serial}. Mapping: {ams_mapping}")
                 return printer, ams_mapping
 
         logger.warning(f"FMS: No match found for Job {job.id} among {len(candidates)} candidates.")
         return None
+
+    def can_printer_print_job(self, printer: Printer, job: Job) -> bool:
+        """
+        Public checker for queue peeking.
+        """
+        requirements = self._get_job_requirements(job)
+        if not requirements:
+            return True
+        
+        mapping = self._match_printer(printer, requirements)
+        return mapping is not None
+
+    def get_ams_mapping(self, printer: Printer, job: Job, product: Optional[Any] = None) -> Optional[List[int]]:
+        """
+        Public mapping calculator.
+        """
+        requirements = self._get_job_requirements(job, product)
+        if not requirements:
+            return []
+        
+        return self._match_printer(printer, requirements)
 
     def _get_job_requirements(self, job: Job, product: Optional[any] = None) -> List[dict]:
         """
@@ -297,9 +319,13 @@ class FilamentManager:
                     match_found = True
             
             if match_found:
-                mapping[i] = best_slot_index
+                # CRITICAL FIX: Shift index by +1
+                # Observation: Sending [3] selects Slot 3 (Index 2). To select Slot 4 (Index 3), we send 4.
+                # This suggests the printer uses 1-based indexing (or 0=External).
+                mapping[i] = best_slot_index + 1
+                
                 used_physical_slots.add(best_slot_index)
-                logger.debug(f"Requirement {i} matched to Slot {best_slot_index} (dE={min_delta_e:.2f})")
+                logger.debug(f"Requirement {i} matched to Slot {best_slot_index} (Sent: {mapping[i]}) (dE={min_delta_e:.2f})")
             else:
                 logger.debug(f"Requirement {i} ({req_material}, {req_color}) FAILED to match any slot on {printer.serial}")
                 return None # Fail

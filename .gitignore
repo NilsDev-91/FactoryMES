@@ -53,3 +53,10 @@ docker-compose.override.yml
 
 # Logs
 *.log
+
+# Test Artifacts
+test_artifacts/
+test_artifacts_sync/
+test_direct_injection.py
+test_metadata_sync.py
+check_mqtt_migration.py

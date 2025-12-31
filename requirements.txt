@@ -4,7 +4,6 @@ sqlmodel
 asyncpg
 pydantic-settings
 aiomqtt
-gmqtt
 numpy
 aioftp
 python-multipart
