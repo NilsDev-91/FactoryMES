@@ -1,0 +1,3 @@
+Job 48 linked to Order: AUTO-WHITE-1767276799
+Job Status: JobStatusEnum.PRINTING
+Printer: 03919C461802608

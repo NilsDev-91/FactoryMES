@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime, timezone
 from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, JSON, DateTime
@@ -54,7 +54,7 @@ class OrderRead(SQLModel):
 class JobRead(SQLModel):
     id: int
     status: str
-    filament_requirements: Optional[List[dict]] = None
+    filament_requirements: Optional[Any] = None
     gcode_path: str
     assigned_printer_serial: Optional[str] = None
 

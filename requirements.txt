@@ -9,3 +9,4 @@ aioftp
 python-multipart
 httpx
 aiofiles
+rich

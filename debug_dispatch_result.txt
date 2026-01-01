@@ -1,0 +1,8 @@
+DEBUGGING MATCH: Job 50 -> Printer 03919C461802608
+Job Req: [{'material': 'PLA', 'color': '#FFFFFF'}]
+Printer Status: PrinterStatusEnum.PRINTING, Cleared: True
+Parsed Req: Material=PLA, Color=#FFFFFF
+
+Checking Slot 0: Material='PLA', Color='76D9F4FF'
+   Color Match result: True
+   SUCCESS: Found match!

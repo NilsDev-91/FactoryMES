@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import socket
 import ssl
@@ -60,9 +61,9 @@ class PrinterCommander:
 
         filename = file_path.split("/")[-1].split("\\")[-1]
         
-        # Unique Remote Filename
-        import time
-        remote_filename = f"{filename.replace('.3mf', '')}_{int(time.time())}.3mf"
+        # Unique Remote Filename - SIMPLIFIED for A1 firmware compatibility
+        # A1 firmware ignores/corrupts commands with long filenames containing GUIDs
+        remote_filename = f"job_{job.id}.3mf"
 
         sanitizer = FileProcessorService()
         sanitized_path: Optional[Path] = None
@@ -73,12 +74,23 @@ class PrinterCommander:
             target_slot = ams_mapping[0]
             ams_index = max(0, target_slot - 1)
 
-            logger.info(f"Sanitizing file for Job {job.id}: {file_path} -> T0 Master (Target: Slot {target_slot})")
+            # Extract filament requirements for metadata matching
+            # Format: [{"material": "...", "hex_color": "..."}]
+            req_color = "#FFFFFF"
+            req_material = "PLA"
+            if job.filament_requirements and len(job.filament_requirements) > 0:
+                req = job.filament_requirements[0]
+                req_color = req.get("hex_color") or req.get("color") or "#FFFFFF"
+                req_material = req.get("material") or "PLA"
+
+            logger.info(f"Sanitizing file for Job {job.id}: {file_path} -> T{ams_index} (Target Color: {req_color})")
             logger.info(f"Dynamic Calibration: Due={is_calibration_due}")
             
             sanitized_path = await sanitizer.sanitize_and_repack(
                 Path(file_path), 
                 target_index=ams_index, 
+                filament_color=req_color,
+                filament_type=req_material,
                 printer_type=printer.type, 
                 is_calibration_due=is_calibration_due
             )
@@ -241,18 +253,9 @@ class PrinterCommander:
                 ftps.prot_p() # Secure data connection
                 debug_log("Logged in. secure data channel (PBSZ 0, PROT P).")
 
-                # FTP Root is usually the SD Card root on Bambu printers
-                # So we upload to /factoryos, not /sdcard/factoryos
-                target_dir = "/factoryos"
-                
-                # Check/Create Dir
-                try:
-                    ftps.mkd(target_dir)
-                    debug_log(f"MKD {target_dir}")
-                except Exception as e:
-                     # Ignore if exists
-                     debug_log(f"MKD ignored: {e}")
-                
+                # FTP Root is the SD Card on Bambu printers
+                # Upload directly to root to avoid path confusion
+                target_dir = "/"
                 ftps.cwd(target_dir)
                 debug_log(f"CWD {target_dir}")
                 
@@ -334,66 +337,73 @@ class PrinterCommander:
                 except:
                     local_ip = "192.168.1.100"
 
-                # Construct internal SD path (where upload_file put it)
-                sd_path = f"/sdcard/factoryos/{filename}"
+                # Use the filename provided by the caller (already includes the job ID from start_job)
+                sd_url = f"file:///sdcard/{filename}"
                 
-                # --- AUTO-DETECT GCODE PATH ---
-                gcode_param = "Metadata/plate_1.gcode" # Default backup
+                # ams_mapping MUST be a 16-element array for Bambu A1
+                # Normalizing 1-based DB slots (1-4) to 0-based HW slots (0-3)
+                full_ams_mapping = [-1] * 16
+                if ams_mapping:
+                    for i, slot_val in enumerate(ams_mapping):
+                        if i < 16 and slot_val is not None:
+                            # Subtract 1 to convert 1-4 (DB) to 0-3 (AMS Hardware)
+                            full_ams_mapping[i] = max(0, slot_val - 1)
                 
-                potential_paths = []
-                if local_file_path:
-                     potential_paths.append(local_file_path)
+                # --- AUTO-DETECT GCODE PATH & MD5 ---
+                gcode_param = "Metadata/plate_1.gcode" 
+                md5_val = None
                 
-                potential_paths += [
-                    f"storage/3mf/{filename}",
-                    f"temp/{filename}",
-                    filename
-                ]
+                check_path = local_file_path if local_file_path and os.path.exists(local_file_path) else None
                 
-                found_local = None
-                for p in potential_paths:
-                    if os.path.exists(p):
-                        found_local = p
-                        break
-                
-                if found_local:
+                if check_path:
                     try:
+                        import hashlib
+                        with open(check_path, "rb") as f:
+                            md5_val = hashlib.md5(f.read()).hexdigest()
+                            
                         import zipfile
-                        with zipfile.ZipFile(found_local, 'r') as z:
-                            for name in z.namelist():
-                                if name.startswith("Metadata/") and name.endswith(".gcode"):
-                                    gcode_param = name
-                                    logger.info(f"Auto-detected GCode path: {gcode_param}")
-                                    break
+                        with zipfile.ZipFile(check_path, 'r') as z:
+                            # Prefer plate_1.gcode
+                            if "Metadata/plate_1.gcode" in z.namelist():
+                                gcode_param = "Metadata/plate_1.gcode"
+                            else:
+                                for name in z.namelist():
+                                    if name.startswith("Metadata/") and name.endswith(".gcode"):
+                                        gcode_param = name
+                                        break
+                        logger.info(f"A1 Protocol: MD5={md5_val} | GCode={gcode_param}")
                     except Exception as e:
-                        logger.warning(f"Failed to inspect 3MF for GCode path: {e}")
-                else:
-                     logger.warning(f"Could not find local file {filename} to verify GCode path. Using default.")
+                        logger.warning(f"Failed to inspect asset for A1 protocol: {e}")
 
                 # Payload matching Bambu Lab 3MF requirement
+                # For local SD card prints, these IDs should be "0"
                 payload = {
                     "print": {
-                        "sequence_id": "2000",
+                        "sequence_id": str(int(time.time() % 10000)),
                         "command": "project_file",
                         "param": gcode_param, 
-                        "url": f"file:///sdcard/factoryos/{filename}", 
-                        "md5": None,
+                        "url": sd_url,
+                        "subtask_name": filename,
+                        "md5": md5_val if md5_val else "",
+                        "file": "",
+                        "profile_id": "0",
+                        "project_id": "0",
+                        "subtask_id": "0",
+                        "task_id": "0",
                         "timelapse": False,
                         "bed_type": "auto", 
                         "bed_levelling": use_calibration,
                         "flow_cali": use_calibration,
                         "vibration_cali": use_calibration,
                         "layer_inspect": True,
-                        "layer_inspect": True,
                         "use_ams": True,
-                        # STRICTLY SINGLE ENTRY as per requirements for sanitized files
-                        "ams_mapping": ams_mapping 
+                        "ams_mapping": full_ams_mapping 
                     }
                 }
                 
                 # Log as requested
                 debug_log(f"MQTT PAYLOAD: {json.dumps(payload)}")
-                logger.info(f"📡 SENDING MQTT CMD: {payload}")
+                logger.info(f"📡 SENDING MQTT CMD: project_file {filename} (Tools 0-3 -> Slots 0-3)")
                 
                 await client.publish(topic, json.dumps(payload))
                 logger.info("Print payload published.")

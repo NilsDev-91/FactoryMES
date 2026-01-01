@@ -77,6 +77,16 @@ export function OrderTable({ orders }: OrderTableProps) {
         return new Date(dateStr).toLocaleString();
     };
 
+    const normalizeFilamentRequirements = (reqs: any): FilamentReq[] => {
+        if (!reqs) return [];
+        const arr = Array.isArray(reqs) ? reqs : [reqs];
+        return arr.map((r, idx) => ({
+            material: r.material || 'PLA',
+            hex_color: r.hex_color || r.color || r.color_hex || '#FFFFFF',
+            virtual_id: r.virtual_id || idx
+        }));
+    };
+
     return (
         <div className="w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-xl">
             <div className="overflow-x-auto">
@@ -129,17 +139,20 @@ export function OrderTable({ orders }: OrderTableProps) {
 
                                                     {/* Filament Dots */}
                                                     <div className="flex -space-x-1 hover:space-x-1 transition-all">
-                                                        {job.filament_requirements?.map((req, i) => (
-                                                            <div
-                                                                key={i}
-                                                                className="w-4 h-4 rounded-full border border-slate-800 shadow-sm"
-                                                                style={{ backgroundColor: req.hex_color }}
-                                                                title={`${req.material} - ${req.hex_color}`}
-                                                            />
-                                                        ))}
-                                                        {(!job.filament_requirements || job.filament_requirements.length === 0) && (
-                                                            <span className="text-xs text-slate-600 italic">No Reqs</span>
-                                                        )}
+                                                        {(() => {
+                                                            const normalizedReqs = normalizeFilamentRequirements(job.filament_requirements);
+                                                            if (normalizedReqs.length === 0) {
+                                                                return <span className="text-xs text-slate-600 italic">No Reqs</span>;
+                                                            }
+                                                            return normalizedReqs.map((req, i) => (
+                                                                <div
+                                                                    key={i}
+                                                                    className="w-4 h-4 rounded-full border border-slate-800 shadow-sm"
+                                                                    style={{ backgroundColor: req.hex_color }}
+                                                                    title={`${req.material} - ${req.hex_color}`}
+                                                                />
+                                                            ));
+                                                        })()}
                                                     </div>
                                                 </div>
                                             ))

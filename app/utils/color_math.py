@@ -7,6 +7,9 @@ def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
     Handles strings with or without '#' and is case-insensitive.
     """
     hex_str = hex_str.lstrip("#").upper()
+    if len(hex_str) == 8:
+        # Strip alpha channel if present
+        hex_str = hex_str[:6]
     if len(hex_str) != 6:
         raise ValueError(f"Invalid hex color: {hex_str}")
     return tuple(int(hex_str[i : i + 2], 16) for i in (0, 2, 4))

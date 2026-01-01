@@ -1,0 +1,7 @@
+Product: Zylinder (ID: 41)
+Parent PrintFile ID: 10
+Parent File Path: storage/3mf\2feceedf-9dc7-4a65-8650-c76b99782f3a.3mf
+
+Found Variant: Zylinder Rot (SKU: ZYL-RED)
+Variant PrintFile ID: 12
+Variant File Path: storage\3mf\zylinder_placeholder.3mf

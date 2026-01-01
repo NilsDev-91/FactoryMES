@@ -1,0 +1,124 @@
+
+[1767279965.29] --- Message 0 ---
+{
+  "print": {
+    "command": "push_status",
+    "sequence_id": "1",
+    "reason": "success",
+    "result": "success"
+  }
+}
+
+[1767279970.41] --- Message 1 ---
+{
+  "print": {
+    "bed_temper": 21.71875,
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18454"
+  }
+}
+
+[1767279972.44] --- Message 2 ---
+{
+  "print": {
+    "bed_temper": 21.78125,
+    "wifi_signal": "-68dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18455"
+  }
+}
+
+[1767279974.46] --- Message 3 ---
+{
+  "print": {
+    "wifi_signal": "-69dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18456"
+  }
+}
+
+[1767279976.48] --- Message 4 ---
+{
+  "print": {
+    "bed_temper": 21.75,
+    "wifi_signal": "-70dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18457"
+  }
+}
+
+[1767279978.51] --- Message 5 ---
+{
+  "print": {
+    "bed_temper": 21.6875,
+    "wifi_signal": "-68dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18458"
+  }
+}
+
+[1767279984.56] --- Message 6 ---
+{
+  "print": {
+    "bed_temper": 21.71875,
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18459"
+  }
+}
+
+[1767279986.57] --- Message 7 ---
+{
+  "print": {
+    "bed_temper": 21.75,
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18460"
+  }
+}
+
+[1767279988.60] --- Message 8 ---
+{
+  "print": {
+    "bed_temper": 21.78125,
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18461"
+  }
+}
+
+[1767279990.64] --- Message 9 ---
+{
+  "print": {
+    "bed_temper": 21.71875,
+    "wifi_signal": "-67dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18462"
+  }
+}
+
+[1767279992.64] --- Message 10 ---
+{
+  "print": {
+    "wifi_signal": "-68dBm",
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18463"
+  }
+}
+
+[1767279994.67] --- Message 11 ---
+{
+  "print": {
+    "bed_temper": 21.75,
+    "command": "push_status",
+    "msg": 1,
+    "sequence_id": "18464"
+  }
+}

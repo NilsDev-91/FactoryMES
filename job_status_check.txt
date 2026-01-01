@@ -1,0 +1,5 @@
+ID: 50
+Status: JobStatusEnum.PENDING
+Printer: None
+Error: None
+Filament Req: [{'material': 'PLA', 'color': '#FFFFFF'}]

@@ -2,10 +2,14 @@ import logging
 import asyncio
 from typing import List, Optional
 from sqlmodel import Session, select
+from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.core.config import settings
 from app.models.core import Job, Product, JobStatusEnum
 from app.models.order import Order, OrderItem
+from app.models.product_sku import ProductSKU
+from app.models.print_file import PrintFile
 from app.services.ebay.orders import ebay_orders
 from app.models.ebay import EbayOrder
 
@@ -63,7 +67,7 @@ class OrderProcessor:
                 except Exception as e:
                     logger.error(f"Failed to process order {ebay_order.order_id}: {e}", exc_info=True)
 
-    async def process_order(self, session: Session, ebay_order: EbayOrder):
+    async def process_order(self, session: AsyncSession, ebay_order: EbayOrder):
         """Converts a single eBay order into an internal Order and Jobs."""
         logger.info(f"Processing new order: {ebay_order.order_id}")
         
@@ -91,40 +95,80 @@ class OrderProcessor:
             )
             session.add(db_item)
             
-            # Match Product & Create Job
+            # Match Product/SKU & Create Job
             if item.sku:
-                stmt = select(Product).where(Product.sku == item.sku)
-                result = await session.exec(stmt)
-                product = result.first()
+                # 1. Try matching with ProductSKU (Master-Variant Architecture)
+                sku_stmt = (
+                    select(ProductSKU)
+                    .where(ProductSKU.sku == item.sku)
+                    .options(
+                        selectinload(ProductSKU.print_file), 
+                        selectinload(ProductSKU.product).selectinload(Product.print_file)
+                    )
+                )
+                sku_result = await session.exec(sku_stmt)
+                sku_record = sku_result.first()
                 
-                if product:
-                    logger.info(f"Found matching product for SKU {item.sku}. Creating {item.quantity} Job(s).")
+                if sku_record:
+                    logger.info(f"Found matching ProductSKU for SKU {item.sku}.")
                     
-                    # Create one job per quantity
+                    # Resolve File Path
+                    file_path = None
+                    if sku_record.print_file:
+                        file_path = sku_record.print_file.file_path
+                    elif sku_record.product and sku_record.product.print_file_id:
+                        # Fallback to parent product's print file
+                        # We need to load it if not available, but for now let's hope it's loaded 
+                        # Or just use product.file_path_3mf as ultimate fallback
+                        file_path = sku_record.product.file_path_3mf
+                    
+                    # Resolve Requirements
+                    reqs = [{
+                        "material": sku_record.product.required_filament_type if sku_record.product else "PLA",
+                        "color": sku_record.hex_color or (sku_record.product.required_filament_color if sku_record.product else None)
+                    }]
+                    
                     for _ in range(item.quantity):
-                        # Determine requirements
-                        # Logic: Use Product default, override if variation suggests valid color
-                        reqs = {
-                            "material": product.required_filament_type,
-                            "color": product.required_filament_color
-                        }
-                        
-                        # Basic variation parsing (can be expanded)
-                        if item.variation_aspects:
-                            for aspect in item.variation_aspects:
-                                if aspect.name.lower() in ["color", "colour"]:
-                                    reqs["color"] = aspect.value
-                                    break
-                        
                         job = Job(
                             order_id=db_order.id,
-                            gcode_path=product.file_path_3mf, # Using 3mf path as source
+                            gcode_path=file_path or "MISSING_FILE",
                             status=JobStatusEnum.PENDING,
                             filament_requirements=reqs
                         )
                         session.add(job)
                 else:
-                    logger.warning(f"No Product found for SKU {item.sku}. No Job created.")
+                    # 2. Fallback to legacy Product lookup
+                    stmt = select(Product).where(Product.sku == item.sku)
+                    result = await session.exec(stmt)
+                    product = result.first()
+                    
+                    if product:
+                        logger.info(f"Found matching legacy Product for SKU {item.sku}. Creating {item.quantity} Job(s).")
+                        
+                        # Create one job per quantity
+                        for _ in range(item.quantity):
+                            # Determine requirements
+                            reqs = [{
+                                "material": product.required_filament_type,
+                                "color": product.required_filament_color
+                            }]
+                            
+                            # Basic variation parsing
+                            if item.variation_aspects:
+                                for aspect in item.variation_aspects:
+                                    if aspect.name.lower() in ["color", "colour"]:
+                                        reqs[0]["color"] = aspect.value
+                                        break
+                            
+                            job = Job(
+                                order_id=db_order.id,
+                                gcode_path=product.file_path_3mf, # Using 3mf path as source
+                                status=JobStatusEnum.PENDING,
+                                filament_requirements=reqs
+                            )
+                            session.add(job)
+                    else:
+                        logger.warning(f"No Product or SKU found for SKU {item.sku}. No Job created.")
             
         await session.commit()
         logger.info(f"Order {ebay_order.order_id} processed successfully.")

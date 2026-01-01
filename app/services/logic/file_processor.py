@@ -7,10 +7,11 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from pydantic import BaseModel, Field
 from app.services.logic.gcode_modifier import GCodeModifier
+from app.core.exceptions import SafetyException
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ class FileProcessorService:
         "Metadata/model_settings.config"
     }
 
-    async def sanitize_and_repack(self, source_path: Path, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
+    async def sanitize_and_repack(self, source_path: Path, target_index: int, filament_color: str = "#FFFFFF", filament_type: str = "PLA", printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
         """
         Asynchronously sanitizes the provided 3MF file.
         Injects the target tool index directly into G-code and Metadata.
@@ -52,6 +53,8 @@ class FileProcessorService:
         Args:
             source_path (Path): Absolute path to the source .3mf file.
             target_index (int): The 0-based AMS slot index (0-15) to force.
+            filament_color (str): Hex color code (e.g. #FF0000).
+            filament_type (str): Material type (e.g. PLA).
             printer_type (Optional[str]): The hardware model (e.g. "A1", "X1C") for auto-ejection.
             
         Returns:
@@ -65,12 +68,12 @@ class FileProcessorService:
 
         loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, printer_type, is_calibration_due)
+            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, filament_color, filament_type, printer_type, is_calibration_due)
         except Exception as e:
             logger.error(f"Failed to sanitize file {source_path}: {e}", exc_info=True)
             raise FileSanitizationError(f"Sanitization failed: {str(e)}") from e
 
-    def _sync_sanitize(self, source_path: Path, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
+    def _sync_sanitize(self, source_path: Path, target_index: int, filament_color: str, filament_type: str, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
         """
         Synchronous core logic: Excludes bad files, neutralizes metadata, normalizes G-code.
         """
@@ -84,11 +87,25 @@ class FileProcessorService:
 
         new_gcode_content: Optional[bytes] = None
         active_gcode_filename: Optional[str] = None
+        part_height_mm: Optional[float] = None  # Extract from metadata for A1 sweep
         
         try:
             with zipfile.ZipFile(source_path, "r") as source_zip, \
                  zipfile.ZipFile(temp_output_path, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
 
+                # --- PRE-PASS: Extract part height from metadata ---
+                for item in source_zip.infolist():
+                    if re.match(r"Metadata/plate_.*\.json$", item.filename):
+                        try:
+                            metadata_content = source_zip.read(item.filename)
+                            part_height_mm = self._extract_part_height(metadata_content)
+                            if part_height_mm:
+                                logger.info(f"Extracted part height: {part_height_mm:.1f}mm from {item.filename}")
+                            break  # Only need first plate metadata
+                        except Exception as e:
+                            logger.warning(f"Failed to extract part height from {item.filename}: {e}")
+
+                # --- MAIN PASS: Process all files ---
                 for item in source_zip.infolist():
                     file_name = item.filename
                     
@@ -101,16 +118,20 @@ class FileProcessorService:
                     if re.match(r"Metadata/plate_.*\.json$", file_name):
                         logger.debug(f"Neutralizing metadata in {file_name}")
                         original_content = source_zip.read(file_name)
-                        modified_content = self._neutralize_metadata_json(original_content)
+                        modified_content = self._neutralize_metadata_json(original_content, target_index, filament_color, filament_type)
                         target_zip.writestr(item, modified_content)
 
                     # C. G-Code Normalization (Metadata/plate_*.gcode)
                     elif re.match(r"Metadata/plate_.*\.gcode$", file_name):
-                        logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type})")
+                        logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type}, Part Height: {part_height_mm})")
                         original_gcode = source_zip.read(file_name)
-                        logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type})")
-                        original_gcode = source_zip.read(file_name)
-                        new_gcode_content = self._normalize_gcode(original_gcode, target_index, printer_type, is_calibration_due)
+                        new_gcode_content = self._normalize_gcode(
+                            original_gcode, 
+                            target_index, 
+                            printer_type, 
+                            is_calibration_due,
+                            part_height_mm=part_height_mm
+                        )
                         active_gcode_filename = file_name
                         target_zip.writestr(item, new_gcode_content)
 
@@ -139,8 +160,18 @@ class FileProcessorService:
                     elif re.match(r"Metadata/slice_info\.config$", file_name):
                          logger.debug(f"Synchronizing Slice Info for T{target_index}")
                          original_xml = source_zip.read(file_name)
-                         new_xml = self._synchronize_metadata(original_xml, target_index)
+                         new_xml = self._synchronize_metadata(original_xml, target_index, filament_color, filament_type)
                          target_zip.writestr(item, new_xml)
+
+                    # G. PASSTHROUGH: Copy all other files as-is (CRITICAL for valid 3MF)
+                    else:
+                         # This includes essential files like:
+                         # - [Content_Types].xml
+                         # - _rels/.rels
+                         # - 3D/3dmodel.model
+                         # - Metadata/*.png (thumbnails)
+                         # - etc.
+                         target_zip.writestr(item, source_zip.read(file_name))
 
                 # Final ensure: If we have an active GCode but no MD5 was written for it
                 if active_gcode_filename:
@@ -159,11 +190,12 @@ class FileProcessorService:
 
         return temp_output_path
 
-    def _synchronize_metadata(self, content: bytes, target_index: int) -> bytes:
+    def _synchronize_metadata(self, content: bytes, target_index: int, filament_color: str, filament_type: str) -> bytes:
         """
         Parses `slice_info.config` XML and forces exactly one filament entry.
         Reasoning: This prevents "Filament Mismatch" errors by removing strict checks
         and aligns with the T0-only G-code strategy.
+        Now also aligns the target slot with physical reality.
         """
         try:
             import xml.etree.ElementTree as ET
@@ -197,8 +229,15 @@ class FileProcessorService:
                 f_elem = ET.Element("filament")
                 f_elem.set("id", str(i))
                 f_elem.set("vendor", "Generic")
-                f_elem.set("type", "PLA")
-                f_elem.set("color", "#FFFFFF")
+                
+                # If this is the target filament, use the real specs to satisfy AMS pre-flight checks
+                if (i - 1) == target_index:
+                    f_elem.set("type", filament_type)
+                    f_elem.set("color", filament_color)
+                else:
+                    f_elem.set("type", "PLA")
+                    f_elem.set("color", "#FFFFFF")
+                
                 plate.append(f_elem)
             
             logger.info("Scrubbed manifest: Forced 4 'Generic PLA' filament entries (Native Strategy).")
@@ -209,13 +248,13 @@ class FileProcessorService:
             logger.error(f"Failed to synchronize metadata: {e}")
             return content
 
-    def _neutralize_metadata_json(self, content: bytes) -> bytes:
+    def _neutralize_metadata_json(self, content: bytes, target_index: int, filament_color: str, filament_type: str) -> bytes:
         """
         Parses JSON.
         Actions:
         - EXPAND to 5 generic filaments (Indices 0-4).
         - Randomize IDs.
-        - Force PLA/White.
+        - Force real specs for the target index to satisfy printer.
         """
         try:
             data = json.loads(content.decode("utf-8"))
@@ -228,6 +267,12 @@ class FileProcessorService:
             data["filament_id"] = new_ids
             data["filament_type"] = ["PLA"] * count
             data["filament_colors"] = ["#FFFFFF"] * count
+            
+            # Use real specs for the target slot!
+            if 0 <= target_index < count:
+                data["filament_type"][target_index] = filament_type
+                data["filament_colors"][target_index] = filament_color
+
             data["filament_is_support"] = [False] * count
             
             return json.dumps(data, indent=4).encode("utf-8")
@@ -235,7 +280,63 @@ class FileProcessorService:
             logger.warning(f"Failed to parse metadata JSON: {e}. Returning original.")
             return content
 
-    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> bytes:
+    def _extract_part_height(self, content: bytes) -> Optional[float]:
+        """
+        Extracts the model/part height from plate metadata JSON.
+        
+        Looks for common height fields in Bambu Lab 3MF metadata:
+        - model_height / modelHeight
+        - objects[*].height / bbox_z
+        - print_height
+        
+        Returns:
+            The part height in mm, or None if not found.
+        """
+        try:
+            data = json.loads(content.decode("utf-8"))
+            
+            # Try direct height fields
+            for key in ["model_height", "modelHeight", "print_height", "height", "z_height"]:
+                if key in data and data[key]:
+                    try:
+                        return float(data[key])
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Try objects array (common in Bambu Studio exports)
+            if "objects" in data and isinstance(data["objects"], list):
+                max_height = 0.0
+                for obj in data["objects"]:
+                    for key in ["height", "bbox_z", "z_max", "model_height"]:
+                        if key in obj:
+                            try:
+                                h = float(obj[key])
+                                max_height = max(max_height, h)
+                            except (ValueError, TypeError):
+                                continue
+                if max_height > 0:
+                    return max_height
+            
+            # Try bounding box (some slicers use this format)
+            if "bounding_box" in data:
+                bbox = data["bounding_box"]
+                if isinstance(bbox, dict) and "z_max" in bbox:
+                    return float(bbox["z_max"])
+                elif isinstance(bbox, list) and len(bbox) >= 6:
+                    # Format: [x_min, y_min, z_min, x_max, y_max, z_max]
+                    return float(bbox[5])
+            
+            logger.debug("No part height field found in metadata")
+            return None
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse metadata JSON for height extraction: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Unexpected error extracting part height: {e}")
+            return None
+
+    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: Optional[float] = None) -> bytes:
         """
         Normalizes the G-code to T0 Master protocol and injects Auto-Ejection footer.
         1. Injects Cache Busting Header (M620 S255, T255).
@@ -286,21 +387,117 @@ class FileProcessorService:
 
         # 4. Inject Auto-Ejection Footer
         if printer_type:
-             final_text = self._inject_ejection_footer(final_text, printer_type)
+             final_text = self._inject_ejection_footer(final_text, printer_type, part_height_mm=part_height_mm)
 
         return final_text.encode("utf-8")
 
-    def _inject_ejection_footer(self, gcode_text: str, printer_type: str) -> str:
+    def _generate_a1_sweep_gcode(self, part_height_mm: float) -> Optional[str]:
+        """
+        Generates the A1 "Safe Gantry Sweep" (Bulldozer) G-code macro.
+        
+        **Valid only for parts > 38mm due to Z+2.0mm safety floor.**
+        
+        Physics Constraints (User-Verified):
+        - HARD Z-FLOOR: Nozzle MUST NEVER go below Z = +2.0 mm.
+        - KINEMATIC OFFSET: Gantry Beam bottom is 33.0 mm above Nozzle Tip.
+        - MINIMUM PART HEIGHT: Beam at Z=2.0 is at 35.0mm effective height.
+          Parts must be > 38.0 mm for reliable mechanical sweep (3mm overlap margin).
+        
+        Args:
+            part_height_mm: The height of the printed part in millimeters.
+            
+        Returns:
+            G-code string if part is tall enough for safe sweep, None otherwise.
+            
+        Raises:
+            SafetyException: If part height is below the mechanical threshold.
+        """
+        # --- SAFETY CONSTANTS ---
+        Z_HARD_FLOOR = 2.0  # mm - ABSOLUTE MINIMUM Z (Nozzle NEVER goes below)
+        KINEMATIC_OFFSET = 33.0  # mm - Beam bottom above nozzle tip
+        MIN_PART_HEIGHT = 38.0  # mm - Minimum part height for safe sweep
+        BED_COOLDOWN_TEMP = 28  # °C - Passive cooling target
+        SWEEP_FEEDRATE = 400  # mm/min - Slow sweep for reliability
+        
+        # --- VALIDATION GATE ---
+        if part_height_mm < MIN_PART_HEIGHT:
+            # Parts below threshold cannot be safely swept - log and return None
+            # Caller should fall back to manual removal or alternative strategy
+            logger.warning(
+                f"A1 Sweep BLOCKED: Part height ({part_height_mm:.1f}mm) is below "
+                f"the mechanical sweep threshold ({MIN_PART_HEIGHT}mm). "
+                f"Z-Floor: {Z_HARD_FLOOR}mm, Beam Offset: {KINEMATIC_OFFSET}mm. "
+                f"Manual removal required."
+            )
+            return None
+        
+        # --- THE SAFE SWEEP SEQUENCE ---
+        # This sequence is designed with zero risk tolerance for bed collisions.
+        sweep_gcode = (
+            "\n; === FACTORYOS A1 GANTRY SWEEP (SAFE BULLDOZER) ==="
+            f"\n; Part Height: {part_height_mm:.1f}mm (Threshold: {MIN_PART_HEIGHT}mm)\n"
+            f"; Z-FLOOR: {Z_HARD_FLOOR}mm (HARD LIMIT - NOZZLE NEVER BELOW THIS)\n"
+            f"; Effective Beam Position: {Z_HARD_FLOOR + KINEMATIC_OFFSET}mm\n"
+            "\n"
+            "; --- PHASE 1: SECURE & COOL ---\n"
+            "M84 S0        ; Lock Motors (Prevent idle timeout during cooldown)\n"
+            "M140 S0       ; Bed Heater OFF\n"
+            "M104 S0       ; Nozzle Heater OFF\n"
+            f"M190 R{BED_COOLDOWN_TEMP}    ; Wait for Bed < {BED_COOLDOWN_TEMP}C (Passive Cooling ONLY - NO FAN)\n"
+            "\n"
+            "; --- PHASE 2: POSITION ---\n"
+            "G90           ; Absolute Positioning\n"
+            "G1 Z100 F3000 ; Safety Lift (Clear any obstacles)\n"
+            "G1 X0 Y0 F6000  ; Park: Nozzle X-Left, Bed to Front\n"
+            f"G1 Z{Z_HARD_FLOOR:.1f} F1000  ; *** CRITICAL: THE HARD FLOOR (Z={Z_HARD_FLOOR}mm) ***\n"
+            "\n"
+            "; --- PHASE 3: SWEEP ACTION ---\n"
+            f"G1 Y256 F{SWEEP_FEEDRATE}  ; Execute Sweep: Bed moves back, Part pushed off by Gantry Beam\n"
+            "\n"
+            "; --- PHASE 4: RESET ---\n"
+            "G1 Z50 F3000  ; Lift Gantry (Clear bed for homing)\n"
+            "G28           ; Home All Axes (Safe now that bed is clear)\n"
+            "M84 S120      ; Restore Default Idle Timeout (120 seconds)\n"
+            "; === END A1 GANTRY SWEEP ==="
+        )
+        
+        logger.info(
+            f"A1 Sweep GENERATED: Part {part_height_mm:.1f}mm, "
+            f"Z-Floor {Z_HARD_FLOOR}mm, Effective Beam at {Z_HARD_FLOOR + KINEMATIC_OFFSET}mm"
+        )
+        
+        return sweep_gcode
+
+    def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> str:
         """
         Appends hardware-specific ejection sequence to the G-code.
+        
+        For A1 printers with tall parts (> 38mm), uses the Safe Gantry Sweep.
+        Falls back to Y-Axis Fling for shorter parts or when height is unknown.
+        
+        Args:
+            gcode_text: The G-code string to append to.
+            printer_type: Hardware model (e.g., "A1", "X1C").
+            part_height_mm: Optional part height for A1 sweep logic.
         """
         p_type = printer_type.upper()
         footer = ""
 
         if "A1" in p_type:
-            # A1 / A1 Mini: Y-Axis Fling
+            # Try the Safe Gantry Sweep for tall parts
+            if part_height_mm is not None:
+                sweep_gcode = self._generate_a1_sweep_gcode(part_height_mm)
+                if sweep_gcode:
+                    logger.info(f"FMS: Using A1 Safe Gantry Sweep for {part_height_mm:.1f}mm part.")
+                    return gcode_text + sweep_gcode
+                else:
+                    logger.info(f"FMS: Part too short for sweep ({part_height_mm:.1f}mm), using standard fling.")
+            
+            # Fallback: A1 / A1 Mini: Y-Axis Fling (for short parts or unknown height)
             footer = (
                 "\n; --- FACTORYOS AUTO-EJECTION (A1 Fling) ---\n"
+                "; NOTE: Part height below sweep threshold or unknown.\n"
+                "; Using inertial ejection instead of gantry sweep.\n"
                 "M104 S0 ; Heat off\n"
                 "M140 S0 ; Bed off\n"
                 "M106 S255 ; Max fan for fast cooling\n"

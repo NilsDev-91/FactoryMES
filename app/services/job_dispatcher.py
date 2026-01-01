@@ -90,7 +90,7 @@ class JobDispatcher:
         try:
             req = job.filament_requirements[0]
             req_material = req.get("material")
-            req_color = req.get("hex_color")
+            req_color = req.get("hex_color") or req.get("color")
         except (IndexError, KeyError):
             return None
 
