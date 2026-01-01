@@ -9,8 +9,16 @@ from app.models.core import Printer, Job, PrinterStatusEnum, JobStatusEnum, Prin
 from app.services.logic.color_matcher import color_matcher
 from app.services.printer.commander import PrinterCommander
 
-import os
 logger = logging.getLogger("JobDispatcher")
+
+class JobDispatcher:
+    """
+    FMS Job Dispatcher - Phase 9
+    Handles intelligent routing of jobs to printers based on active AMS telemetry.
+    """
+    
+    def __init__(self):
+        self.commander = PrinterCommander()
 
     async def dispatch_next_job(self, session: AsyncSession):
         """
