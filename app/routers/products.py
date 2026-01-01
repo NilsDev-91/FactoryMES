@@ -165,29 +165,13 @@ async def upload_product_file(file: UploadFile = File(...), session: AsyncSessio
 
 @router.delete("/{id}")
 async def delete_product(id: int, session: AsyncSession = Depends(get_session)):
-    # 1. Try to fetch as ProductSKU (Frontend Catalog Logic)
-    sku = await session.get(ProductSKU, id)
-    if sku:
-        # It's a SKU (Catalog Item)
-        # Optional: Cascade delete to Parent Product if this is the Master/Only SKU?
-        # For now, safe delete of the SKU entry.
-        await session.delete(sku)
-        await session.commit()
-        return {"ok": True}
-
-    # 2. Fallback: Try to fetch as Product (Legacy/Raw Access)
-    product = await session.get(Product, id)
-    if product:
-        if os.path.exists(product.file_path_3mf):
-            try:
-                os.remove(product.file_path_3mf)
-            except:
-                pass 
-        await session.delete(product)
-        await session.commit()
-        return {"ok": True}
-
-    raise HTTPException(status_code=404, detail="Product or SKU not found")
+    """
+    Deletes a Product or SKU and its entire hierarchy.
+    """
+    success = await ProductService.delete_product(id, session)
+    if not success:
+        raise HTTPException(status_code=404, detail="Product or SKU not found")
+    return {"ok": True}
 
 @router.patch("/{id}", response_model=ProductReadDTO)
 async def update_product(id: int, product_update: ProductUpdateDTO, session: AsyncSession = Depends(get_session)):

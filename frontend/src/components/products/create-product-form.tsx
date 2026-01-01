@@ -186,6 +186,7 @@ export function CreateProductForm() {
                         />
                         <p className="text-[10px] text-slate-500 ml-1">
                             Höhe des gedruckten Teils für automatische Auswerfer-Berechnung.
+                            Physical Limit: Parts &lt; 38mm cannot be auto-ejected by the A1 Gantry.
                         </p>
                     </div>
 
@@ -197,11 +198,11 @@ export function CreateProductForm() {
                             </label>
                             <p className={cn(
                                 "text-[10px]",
-                                (form.watch('part_height_mm') ?? 0) >= 50 ? "text-slate-500" : "text-amber-400"
+                                (form.watch('part_height_mm') ?? 0) >= 38 ? "text-slate-500" : "text-amber-400"
                             )}>
-                                {(form.watch('part_height_mm') ?? 0) >= 50
+                                {(form.watch('part_height_mm') ?? 0) >= 38
                                     ? "Automatisches Auswerfen nach Druckende aktivieren."
-                                    : "⚠️ Erfordert Bauteilhöhe ≥ 50mm (Gantry Sweep Sicherheit)"
+                                    : "⚠️ Erfordert Bauteilhöhe ≥ 38mm (Gantry Sweep Sicherheit)"
                                 }
                             </p>
                         </div>
@@ -210,17 +211,17 @@ export function CreateProductForm() {
                             onClick={() => {
                                 const current = form.watch('is_continuous_printing');
                                 const height = form.watch('part_height_mm') ?? 0;
-                                if (height >= 50 || current) {
+                                if (height >= 38 || current) {
                                     form.setValue('is_continuous_printing', !current, { shouldValidate: true });
                                 }
                             }}
-                            disabled={(form.watch('part_height_mm') ?? 0) < 50 && !form.watch('is_continuous_printing')}
+                            disabled={(form.watch('part_height_mm') ?? 0) < 38 && !form.watch('is_continuous_printing')}
                             className={cn(
                                 "relative w-12 h-6 rounded-full transition-all duration-200",
                                 form.watch('is_continuous_printing')
                                     ? "bg-amber-500 shadow-lg shadow-amber-500/30"
                                     : "bg-slate-700",
-                                (form.watch('part_height_mm') ?? 0) < 50 && "opacity-50 cursor-not-allowed"
+                                (form.watch('part_height_mm') ?? 0) < 38 && "opacity-50 cursor-not-allowed"
                             )}
                         >
                             <div className={cn(

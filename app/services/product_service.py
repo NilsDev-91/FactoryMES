@@ -1,6 +1,10 @@
+import logging
 import uuid
 from typing import List, Optional, Set
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -239,3 +243,39 @@ class ProductService:
         session.add(product)
         await session.commit()
         return await ProductService.get_product(actual_id, session)
+
+    @staticmethod
+    async def delete_product(id: int, session: AsyncSession) -> bool:
+        """
+        Deletes a product and all its associated variants/SKUs.
+        Supports both Product IDs and ProductSKU IDs (finds the parent product).
+        """
+        # 1. Try to find the Product directly
+        product = await session.get(Product, id)
+        
+        # 2. If not found, try to find it via a ProductSKU ID
+        if not product:
+            sku = await session.get(ProductSKU, id)
+            if sku and sku.product_id:
+                product = await session.get(Product, sku.product_id)
+        
+        if not product:
+            logger.warning(f"Deletion attempted for ID {id} but no Product found.")
+            return False
+
+        logger.info(f"Cascading delete of Product {product.id} ({product.name})...")
+        
+        # 3. Clean up physical files if they exist (Legacy Support)
+        if product.file_path_3mf and os.path.exists(product.file_path_3mf):
+            try:
+                os.remove(product.file_path_3mf)
+                logger.info(f"Removed physical file: {product.file_path_3mf}")
+            except Exception as e:
+                logger.warning(f"Could not remove file {product.file_path_3mf}: {e}")
+
+        # 4. Delete the Product entity
+        # The relationship cascade="all, delete-orphan" in Product.variants 
+        # will trigger the deletion of all associated ProductSKUs.
+        await session.delete(product)
+        await session.commit()
+        return True

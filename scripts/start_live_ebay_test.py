@@ -2,9 +2,11 @@ import asyncio
 import logging
 import sys
 import os
+import time
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from sqlmodel import select, delete, col, update
 from sqlalchemy.orm import selectinload
 
@@ -23,7 +25,6 @@ from app.models.core import Printer, PrinterStatusEnum, Job, JobStatusEnum, Prod
 from app.models.product_sku import ProductSKU 
 from app.models.filament import AmsSlot
 from app.models.order import Order, OrderItem
-# --- FIX: Korrekte Importe aus app/models/ebay.py ---
 from app.models.ebay import EbayOrder, EbayLineItem, EbayPricingSummary, EbayPrice, EbayBuyer
 from app.services.production.order_processor import order_processor
 
@@ -31,196 +32,170 @@ from app.services.production.order_processor import order_processor
 console = Console()
 logging.basicConfig(level=logging.ERROR)
 
+async def inject_mock_order(session, skus, label="TEST"):
+    """Helper to inject a mock eBay order with multiple SKUs."""
+    order_id = f"LIVE-{label}-{int(time.time())}"
+    
+    line_items = []
+    for i, sku in enumerate(skus):
+        line_items.append(EbayLineItem(
+            sku=sku,
+            title=f"Mock Item {i} ({sku})",
+            quantity=1,
+            line_item_id=f"LI-{label}-{i}",
+            legacy_item_id=f"LEGACY-{label}-{i}"
+        ))
+
+    mock_ebay_order = EbayOrder(
+        order_id=order_id,
+        creation_date=datetime.now(), 
+        last_modified_date=datetime.now(),
+        order_payment_status="PAID",       
+        order_fulfillment_status="NOT_STARTED",
+        buyer=EbayBuyer(username="FactoryAdmin"), 
+        pricing_summary=EbayPricingSummary(
+            total=EbayPrice(value="0.00", currency="EUR")
+        ), 
+        line_items=line_items
+    )
+
+    await order_processor.process_order(session, mock_ebay_order)
+    return order_id
+
+async def find_target_skus(session):
+    """Finds the required SKUs for the test scenario."""
+    # Scenario: Zylinder (White, Red) and Zylinder.V2 (Blue)
+    targets = [
+        {"prod": "Zylinder", "var": "white"},
+        {"prod": "Zylinder", "var": "red"},
+        {"prod": "Zylinder.V2", "var": "blue"} # Or variant 60mm
+    ]
+    
+    found_skus = []
+    
+    for t in targets:
+        stmt = (
+            select(ProductSKU)
+            .join(Product)
+            .where(Product.name.ilike(f"%{t['prod']}%"))
+            .where(ProductSKU.name.ilike(f"%{t['var']}%"))
+        )
+        res = (await session.exec(stmt)).first()
+        if res:
+            found_skus.append(res.sku)
+            console.print(f"✅ Found Target: [cyan]{t['prod']} - {t['var']}[/cyan] (SKU: {res.sku})")
+        else:
+            console.print(f"⚠️  Missing Target: {t['prod']} - {t['var']}")
+
+    # Fallback: if we didn't find all 3 items, just find any 3 distinct SKUs
+    if len(found_skus) < 3:
+        console.print("[yellow]Using fallback: Finding any 3 distinct SKUs to satisfy test requirements...[/yellow]")
+        stmt_fallback = select(ProductSKU).limit(5)
+        all_skus = (await session.exec(stmt_fallback)).all()
+        found_skus = list(set([s.sku for s in all_skus]))[:3]
+        
+    return found_skus
+
 async def start_live_test():
-    console.print(Panel.fit("[bold red]🚀 LIVE FIRE TEST: eBay Order-to-Physical-Print[/bold red]"))
+    console.print(Panel.fit("[bold red]🚀 LIVE FIRE TEST V2: Advanced Multi-Order Simulation[/bold red]"))
     console.print("⚠️  [bold yellow]WARNING: This script will clean the DB and move real hardware![/bold yellow]")
 
     async with async_session_maker() as session:
         
-        # ==============================================================================
-        # STEP 0: DEEP CLEAN (GHOST & SIMULATION PURGE)
-        # ==============================================================================
-        console.print("\n[bold]Step 0: Operation Clean Slate (Deep Clean)[/bold]")
-        
-        # --- A. CLEANUP ORDERS ---
-        # Total Purge of all orders, items, and jobs
-        console.print("🗑️  Purging all current orders and jobs for a clean state...")
+        # STEP 0: DEEP CLEAN
+        console.print("\n[bold]Step 0: Operation Clean Slate[/bold]")
         await session.exec(delete(Job))
         await session.exec(delete(OrderItem))
         await session.exec(delete(Order))
-        console.print("   ✅ All orders, order items, and jobs deleted.")
         
-        # --- B. CLEANUP SIMULATED PRINTERS ---
-        # Lösche alles was mit SIM- beginnt
-        stmt_sim = select(Printer).where(col(Printer.serial).startswith("SIM"))
-        sim_printers = (await session.exec(stmt_sim)).all()
-        
-        if sim_printers:
-            sim_serials = [p.serial for p in sim_printers]
-            console.print(f"🤖 Found {len(sim_serials)} simulated printers. Cleaning up...")
-            
-            # 1. Unlink Jobs (Foreign Key Fix)
-            console.print("   🔗 Unlinking orphaned jobs...")
-            stmt_unlink = (
-                update(Job)
-                .where(col(Job.assigned_printer_serial).in_(sim_serials))
-                .values(assigned_printer_serial=None)
-            )
-            await session.exec(stmt_unlink)
-
-            # 2. Delete Dependencies
-            await session.exec(delete(AmsSlot).where(col(AmsSlot.printer_id).in_(sim_serials)))
-            await session.exec(delete(Printer).where(col(Printer.serial).in_(sim_serials)))
-            
-            console.print(f"   🗑️  Deleted printers: {', '.join(sim_serials)}")
-        
-        # --- C. RESET REAL PRINTERS ---
-        # Ensure real printers are IDLE and ready for the test
-        console.print("🔄 Resetting real printers to IDLE state...")
+        # Reset real printers
         stmt_real = select(Printer).where(~col(Printer.serial).startswith("SIM"))
         real_printers = (await session.exec(stmt_real)).all()
-        
         for p in real_printers:
             p.current_status = PrinterStatusEnum.IDLE
             p.current_job_id = None
             p.is_plate_cleared = True
             session.add(p)
-            console.print(f"   ✅ Reset [cyan]{p.name}[/cyan] ({p.serial}) to IDLE.")
-
         await session.commit()
-        console.print("✨ System Cleaned. Only Real Data remains (Reset to IDLE).")
+        console.print("   ✅ System Purged and Real Printers reset to IDLE.")
 
-
-        # ==============================================================================
         # STEP 1: HARDWARE CHECK
-        # ==============================================================================
-        console.print("\n[bold]Step 1: Checking Hardware Readiness[/bold]")
-        
-        all_printers = (await session.exec(select(Printer))).all()
-        if not all_printers:
-             console.print("[bold red]❌ CRITICAL: No printers found in DB! (Did you delete the real one?)[/bold red]")
-             return
-             
-        real_printer = None
-        for p in all_printers:
-            console.print(f"   Found Device: [cyan]{p.name}[/cyan] ({p.serial}) - Status: {p.current_status}")
-            # Relaxed check: Just needs to be IDLE
-            if p.current_status == PrinterStatusEnum.IDLE:
-                real_printer = p
-        
+        console.print("\n[bold]Step 1: Hardware Readiness[/bold]")
+        real_printer = (await session.exec(select(Printer).where(Printer.current_status == PrinterStatusEnum.IDLE))).first()
         if not real_printer:
-            console.print("[bold red]❌ ABORT: No IDLE printers found.[/bold red]")
+            console.print("[red]❌ ABORT: No IDLE printers found.[/red]")
             return
+        console.print(f"✅ TARGET: [green bold]{real_printer.name}[/green bold]")
+
+        # STEP 2: SKU LOOKUP
+        console.print("\n[bold]Step 2: Locating Test SKUs[/bold]")
+        skus = await find_target_skus(session)
+        if len(skus) < 3:
+            console.print("[red]❌ ABORT: Could not find enough SKUs for test sequence.[/red]")
+            return
+
+        # STEP 3: ORDER INJECTION
+        console.print("\n[bold]Step 3: Sequential Order Injection[/bold]")
+        
+        # Order A: The Mix (White + Red)
+        order_a_id = await inject_mock_order(session, skus[0:2], "MIX")
+        console.print(f"📥 [bold]Order A (The Mix)[/bold] injected: {order_a_id} (SKUs: {', '.join(skus[0:2])})")
+        
+        console.print("⏳ Simulating traffic... Waiting 15 seconds before next order.")
+        await asyncio.sleep(15)
+        
+        # Order B: The Tower (Blue / V2)
+        order_b_id = await inject_mock_order(session, [skus[2]], "TOWER")
+        console.print(f"📥 [bold]Order B (The Tower)[/bold] injected: {order_b_id} (SKU: {skus[2]})")
+
+        # STEP 4: ADVANCED MONITORING
+        console.print("\n[bold]Step 4: Advanced Job Monitoring[/bold]")
+        
+        for i in range(40): # ~6.5 minutes polling
+            await session.commit() # Refresh session
             
-        # Force Plate Cleared flag for test
-        if not real_printer.is_plate_cleared:
-             console.print("[yellow]⚠️  Printer is IDLE but Plate marked dirty. Forcing clear for test...[/yellow]")
-             real_printer.is_plate_cleared = True
-             session.add(real_printer)
-             await session.commit()
-
-        console.print(f"✅ TARGET ACQUIRED: [green bold]{real_printer.name}[/green bold] (Serial: {real_printer.serial})")
-
-        # ==============================================================================
-        # STEP 2: DATA VERIFICATION
-        # ==============================================================================
-        console.print("\n[bold]Step 2: Verifying SKU Mapping[/bold]")
-        prod_query = select(Product).where(Product.name == "Zylinder").options(selectinload(Product.variants))
-        prod = (await session.exec(prod_query)).first()
-        
-        if not prod:
-             console.print("[bold red]❌ ABORT: Product 'Zylinder' not found.[/bold red]")
-             return
-
-        target_sku_code = None
-        for variant in prod.variants:
-            if "rot" in variant.name.lower() or "red" in variant.name.lower():
-                target_sku_code = variant.sku
-                console.print(f"✅ Found Variant: [green]{variant.name}[/green] (SKU: {target_sku_code})")
-                break
-        
-        if not target_sku_code:
-             console.print("[bold red]❌ ABORT: No Red variant found for Zylinder.[/bold red]")
-             return
-
-        # ==============================================================================
-        # STEP 3: LIVE INJECTION
-        # ==============================================================================
-        console.print("\n[bold]Step 3: Injecting Live Order[/bold]")
-        
-        new_order_id = f"LIVE-TEST-{int(asyncio.get_event_loop().time())}"
-        
-        # FIX: Using Correct Pydantic Models & Fields
-        mock_ebay_order = EbayOrder(
-            order_id=new_order_id,
-            creation_date=datetime.now(), 
-            last_modified_date=datetime.now(), # Mandatory
-            order_payment_status="PAID",       
-            order_fulfillment_status="NOT_STARTED",
-            buyer=EbayBuyer(username="FactoryAdmin"), 
-            pricing_summary=EbayPricingSummary(
-                total=EbayPrice(value="0.00", currency="EUR")
-            ), 
-            line_items=[
-                EbayLineItem(
-                    sku=target_sku_code,
-                    title="Live Test Zylinder Red",
-                    quantity=1,
-                    line_item_id="LI-1",
-                    legacy_item_id="LEGACY-1" # Mandatory
+            stmt_jobs = select(Job).join(Order).where(col(Order.ebay_order_id).in_([order_a_id, order_b_id]))
+            current_jobs = (await session.exec(stmt_jobs)).all()
+            
+            table = Table(title=f"Production Pipeline State (Update {i+1})")
+            table.add_column("Job ID", style="cyan")
+            table.add_column("SKU", style="magenta")
+            table.add_column("Status", style="bold")
+            table.add_column("Printer", style="green")
+            
+            done_count = 0
+            for j in current_jobs:
+                # Find SKU for this job (simplified for mock requirements)
+                req = j.filament_requirements[0] if j.filament_requirements else {}
+                sku_label = f"{req.get('material', '???')} - {req.get('hex_color', '???')}"
+                
+                status_color = "white"
+                if j.status == JobStatusEnum.PRINTING: 
+                    status_color = "green"
+                    done_count += 1
+                elif j.status == JobStatusEnum.FAILED: 
+                    status_color = "red"
+                elif j.status == JobStatusEnum.UPLOADING: 
+                    status_color = "yellow"
+                
+                table.add_row(
+                    str(j.id), 
+                    sku_label, 
+                    f"[{status_color}]{j.status}[/{status_color}]", 
+                    j.assigned_printer_serial or "---"
                 )
-            ]
-        )
-
-        await order_processor.process_order(session, mock_ebay_order)
-        console.print(f"✅ Order [bold]{new_order_id}[/bold] Injected.")
-
-        # ==============================================================================
-        # STEP 4: MONITORING
-        # ==============================================================================
-        console.print("\n[bold]Step 4: Waiting for Fleet Manager Execution...[/bold]")
-        
-        # Reload Order to get DB ID
-        order_query = select(Order).where(Order.ebay_order_id == new_order_id)
-        db_order = (await session.exec(order_query)).first()
-        
-        if not db_order:
-             console.print("[red]❌ Error: Order persistence failed.[/red]")
-             return
-             
-        # Wait for Job creation
-        job = None
-        for _ in range(5):
-            await session.refresh(db_order, ["jobs"])
-            if db_order.jobs:
-                job = db_order.jobs[0]
-                break
-            await asyncio.sleep(1)
             
-        if not job:
-             console.print("[red]❌ Error: Job creation failed. Check OrderProcessor logs.[/red]")
-             return
-
-        console.print(f"   👀 Tracking Job ID: [bold]{job.id}[/bold] (Initial Status: {job.status})")
-
-        # Poll loop
-        for i in range(30): # 2.5 Minutes
-            await session.refresh(job)
+            console.clear()
+            console.print(Panel.fit("[bold red]🚀 LIVE FIRE MONITORING[/bold red]"))
+            console.print(table)
             
-            if job.status == JobStatusEnum.PRINTING:
-                console.print(f"\n[bold green]🚀 SUCCESS! Job {job.id} is now PRINTING on {job.assigned_printer_serial}![/bold green]")
+            if len(current_jobs) >= 3 and done_count >= 3:
+                console.print("\n[bold green]🏁 MISSION ACCOMPLISHED: All 3 jobs are PRINTING![/bold green]")
                 return
             
-            if job.status == JobStatusEnum.FAILED:
-                console.print(f"\n[bold red]❌ Job Failed! Error: {job.error_message}[/bold red]")
-                return
+            await asyncio.sleep(10)
 
-            if i % 2 == 0:
-                console.print(f"   ... Status: {job.status} (Waiting for FleetManager cycle)")
-            await asyncio.sleep(5)
-
-        console.print("\n[bold yellow]⚠️ Timeout: Job did not start within 2.5 minutes.[/bold yellow]")
-        console.print("Check if AMS slots match (Delta E < 5.0) or if Printer is truly IDLE.")
+        console.print("\n[bold yellow]⚠️  Timeout: Not all jobs reached PRINTING state.[/bold yellow]")
 
 if __name__ == "__main__":
     asyncio.run(start_live_test())

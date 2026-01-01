@@ -45,7 +45,7 @@ class FileProcessorService:
         "Metadata/model_settings.config"
     }
 
-    async def sanitize_and_repack(self, source_path: Path, target_index: int, filament_color: str = "#FFFFFF", filament_type: str = "PLA", printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
+    async def sanitize_and_repack(self, source_path: Path, target_index: int, filament_color: str = "#FFFFFF", filament_type: str = "PLA", printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: float = 38.0) -> Path:
         """
         Asynchronously sanitizes the provided 3MF file.
         Injects the target tool index directly into G-code and Metadata.
@@ -68,12 +68,12 @@ class FileProcessorService:
 
         loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, filament_color, filament_type, printer_type, is_calibration_due)
+            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, filament_color, filament_type, printer_type, is_calibration_due, part_height_mm)
         except Exception as e:
             logger.error(f"Failed to sanitize file {source_path}: {e}", exc_info=True)
             raise FileSanitizationError(f"Sanitization failed: {str(e)}") from e
 
-    def _sync_sanitize(self, source_path: Path, target_index: int, filament_color: str, filament_type: str, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
+    def _sync_sanitize(self, source_path: Path, target_index: int, filament_color: str, filament_type: str, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm_override: Optional[float] = None) -> Path:
         """
         Synchronous core logic: Excludes bad files, neutralizes metadata, normalizes G-code.
         """
@@ -93,17 +93,21 @@ class FileProcessorService:
             with zipfile.ZipFile(source_path, "r") as source_zip, \
                  zipfile.ZipFile(temp_output_path, "w", compression=zipfile.ZIP_DEFLATED) as target_zip:
 
-                # --- PRE-PASS: Extract part height from metadata ---
-                for item in source_zip.infolist():
-                    if re.match(r"Metadata/plate_.*\.json$", item.filename):
-                        try:
-                            metadata_content = source_zip.read(item.filename)
-                            part_height_mm = self._extract_part_height(metadata_content)
-                            if part_height_mm:
-                                logger.info(f"Extracted part height: {part_height_mm:.1f}mm from {item.filename}")
-                            break  # Only need first plate metadata
-                        except Exception as e:
-                            logger.warning(f"Failed to extract part height from {item.filename}: {e}")
+                if part_height_mm_override is not None:
+                    part_height_mm = part_height_mm_override
+                    logger.info(f"Using provided part height: {part_height_mm:.1f}mm (Override)")
+                else:
+                    # --- PRE-PASS: Extract part height from metadata ---
+                    for item in source_zip.infolist():
+                        if re.match(r"Metadata/plate_.*\.json$", item.filename):
+                            try:
+                                metadata_content = source_zip.read(item.filename)
+                                part_height_mm = self._extract_part_height(metadata_content)
+                                if part_height_mm:
+                                    logger.info(f"Extracted part height: {part_height_mm:.1f}mm from {item.filename}")
+                                break  # Only need first plate metadata
+                            except Exception as e:
+                                logger.warning(f"Failed to extract part height from {item.filename}: {e}")
 
                 # --- MAIN PASS: Process all files ---
                 for item in source_zip.infolist():
@@ -391,82 +395,43 @@ class FileProcessorService:
 
         return final_text.encode("utf-8")
 
-    def _generate_a1_sweep_gcode(self, part_height_mm: float) -> Optional[str]:
+    def _generate_a1_sweep_gcode(self, part_height_mm: float) -> List[str]:
         """
-        Generates the A1 "Safe Gantry Sweep" (Bulldozer) G-code macro.
-        
-        **Valid only for parts > 38mm due to Z+2.0mm safety floor.**
-        
-        Physics Constraints (User-Verified):
-        - HARD Z-FLOOR: Nozzle MUST NEVER go below Z = +2.0 mm.
-        - KINEMATIC OFFSET: Gantry Beam bottom is 33.0 mm above Nozzle Tip.
-        - MINIMUM PART HEIGHT: Beam at Z=2.0 is at 35.0mm effective height.
-          Parts must be > 38.0 mm for reliable mechanical sweep (3mm overlap margin).
-        
-        Args:
-            part_height_mm: The height of the printed part in millimeters.
-            
-        Returns:
-            G-code string if part is tall enough for safe sweep, None otherwise.
-            
-        Raises:
-            SafetyException: If part height is below the mechanical threshold.
+        Generates the A1 Safe Sweep sequence based on PART HEIGHT from DB.
+        Safe Floor: Z=2.0mm. Beam Offset: 33.0mm.
         """
-        # --- SAFETY CONSTANTS ---
-        Z_HARD_FLOOR = 2.0  # mm - ABSOLUTE MINIMUM Z (Nozzle NEVER goes below)
-        KINEMATIC_OFFSET = 33.0  # mm - Beam bottom above nozzle tip
-        MIN_PART_HEIGHT = 38.0  # mm - Minimum part height for safe sweep
-        BED_COOLDOWN_TEMP = 28  # °C - Passive cooling target
-        SWEEP_FEEDRATE = 400  # mm/min - Slow sweep for reliability
+        SAFE_FLOOR = 2.0
+        BEAM_OFFSET = 33.0
+        MIN_SWEEP_HEIGHT = 38.0
+
+        if part_height_mm < MIN_SWEEP_HEIGHT:
+            logger.warning(f"Part height {part_height_mm}mm < {MIN_SWEEP_HEIGHT}mm. Manual removal required.")
+            return []  # No G-code -> Printer stops -> Human intervention
+
+        # Dynamic Leverage Calculation (Hit at 60% height)
+        target_beam_z = part_height_mm * 0.6
+        ideal_nozzle_z = target_beam_z - BEAM_OFFSET
         
-        # --- VALIDATION GATE ---
-        if part_height_mm < MIN_PART_HEIGHT:
-            # Parts below threshold cannot be safely swept - log and return None
-            # Caller should fall back to manual removal or alternative strategy
-            logger.warning(
-                f"A1 Sweep BLOCKED: Part height ({part_height_mm:.1f}mm) is below "
-                f"the mechanical sweep threshold ({MIN_PART_HEIGHT}mm). "
-                f"Z-Floor: {Z_HARD_FLOOR}mm, Beam Offset: {KINEMATIC_OFFSET}mm. "
-                f"Manual removal required."
-            )
-            return None
-        
-        # --- THE SAFE SWEEP SEQUENCE ---
-        # This sequence is designed with zero risk tolerance for bed collisions.
-        sweep_gcode = (
-            "\n; === FACTORYOS A1 GANTRY SWEEP (SAFE BULLDOZER) ==="
-            f"\n; Part Height: {part_height_mm:.1f}mm (Threshold: {MIN_PART_HEIGHT}mm)\n"
-            f"; Z-FLOOR: {Z_HARD_FLOOR}mm (HARD LIMIT - NOZZLE NEVER BELOW THIS)\n"
-            f"; Effective Beam Position: {Z_HARD_FLOOR + KINEMATIC_OFFSET}mm\n"
-            "\n"
-            "; --- PHASE 1: SECURE & COOL ---\n"
-            "M84 S0        ; Lock Motors (Prevent idle timeout during cooldown)\n"
-            "M140 S0       ; Bed Heater OFF\n"
-            "M104 S0       ; Nozzle Heater OFF\n"
-            f"M190 R{BED_COOLDOWN_TEMP}    ; Wait for Bed < {BED_COOLDOWN_TEMP}C (Passive Cooling ONLY - NO FAN)\n"
-            "\n"
-            "; --- PHASE 2: POSITION ---\n"
-            "G90           ; Absolute Positioning\n"
-            "G1 Z100 F3000 ; Safety Lift (Clear any obstacles)\n"
-            "G1 X0 Y0 F6000  ; Park: Nozzle X-Left, Bed to Front\n"
-            f"G1 Z{Z_HARD_FLOOR:.1f} F1000  ; *** CRITICAL: THE HARD FLOOR (Z={Z_HARD_FLOOR}mm) ***\n"
-            "\n"
-            "; --- PHASE 3: SWEEP ACTION ---\n"
-            f"G1 Y256 F{SWEEP_FEEDRATE}  ; Execute Sweep: Bed moves back, Part pushed off by Gantry Beam\n"
-            "\n"
-            "; --- PHASE 4: RESET ---\n"
-            "G1 Z50 F3000  ; Lift Gantry (Clear bed for homing)\n"
-            "G28           ; Home All Axes (Safe now that bed is clear)\n"
-            "M84 S120      ; Restore Default Idle Timeout (120 seconds)\n"
-            "; === END A1 GANTRY SWEEP ==="
-        )
-        
-        logger.info(
-            f"A1 Sweep GENERATED: Part {part_height_mm:.1f}mm, "
-            f"Z-Floor {Z_HARD_FLOOR}mm, Effective Beam at {Z_HARD_FLOOR + KINEMATIC_OFFSET}mm"
-        )
-        
-        return sweep_gcode
+        # CLAMP to Safe Floor (Crucial Safety Step)
+        sweep_z = max(SAFE_FLOOR, ideal_nozzle_z)
+
+        return [
+            "; --- A1 SAFE SWEEP (FactoryMES) ---",
+            f"; Part Height: {part_height_mm}mm | Sweep Z: {sweep_z:.2f}mm",
+            "M84 S0       ; 1. Lock Motors (Infinite Timeout)",
+            "M140 S0      ; 2. Bed Off",
+            "M104 S0      ; 3. Nozzle Off",
+            "M190 R28     ; 4. WAIT for Cool (Passive < 28C)",
+            "G90          ; 5. Absolute Positioning",
+            "G1 Z100 F3000; 6. Safety Lift",
+            "G1 X0 Y0     ; 7. Park (Nozzle Left, Bed Front)",
+            f"G1 Z{sweep_z:.2f}  ; 8. Move to Sweep Height",
+            "G1 Y256 F1500; 9. EXECUTE SWEEP (Push Part)",
+            "G1 Z50 F3000 ; 10. Lift",
+            "G28          ; 11. Re-Home (Safe now)",
+            "M84 S120     ; 12. Restore Idle Timeout",
+            "; --- END SWEEP ---"
+        ]
 
     def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> str:
         """
@@ -474,11 +439,6 @@ class FileProcessorService:
         
         For A1 printers with tall parts (> 38mm), uses the Safe Gantry Sweep.
         Falls back to Y-Axis Fling for shorter parts or when height is unknown.
-        
-        Args:
-            gcode_text: The G-code string to append to.
-            printer_type: Hardware model (e.g., "A1", "X1C").
-            part_height_mm: Optional part height for A1 sweep logic.
         """
         p_type = printer_type.upper()
         footer = ""
@@ -486,10 +446,10 @@ class FileProcessorService:
         if "A1" in p_type:
             # Try the Safe Gantry Sweep for tall parts
             if part_height_mm is not None:
-                sweep_gcode = self._generate_a1_sweep_gcode(part_height_mm)
-                if sweep_gcode:
+                sweep_lines = self._generate_a1_sweep_gcode(part_height_mm)
+                if sweep_lines:
                     logger.info(f"FMS: Using A1 Safe Gantry Sweep for {part_height_mm:.1f}mm part.")
-                    return gcode_text + sweep_gcode
+                    return gcode_text + "\n".join(sweep_lines)
                 else:
                     logger.info(f"FMS: Part too short for sweep ({part_height_mm:.1f}mm), using standard fling.")
             

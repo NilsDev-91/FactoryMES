@@ -177,10 +177,14 @@ class PrintJobExecutionService:
             logger.error(f"   Target: {target_hex}")
             logger.error(f"   FMS Match: Slot {match_slot_idx}")
             logger.error(f"   Mapping Sent: {ams_mapping}")
-            logger.error(f"   Calibration Due: {is_calibration_due} (Since: {printer.jobs_since_calibration}/{printer.calibration_interval})")
+            # PHASE 6: Safe Sweep Optimization
+            # Extract part height from metadata (DB source of truth)
+            part_height_mm = 50.0  # Safe Default
+            if job.job_metadata:
+                part_height_mm = job.job_metadata.get("part_height_mm") or job.job_metadata.get("model_height_mm") or 50.0
             
             try:
-                await self.printer_commander.start_job(printer, job, ams_mapping, is_calibration_due=is_calibration_due)
+                await self.printer_commander.start_job(printer, job, ams_mapping, is_calibration_due=is_calibration_due, part_height_mm=part_height_mm)
                 
                 # Success Update
                 # Refresh to ensure we don't overwrite other updates

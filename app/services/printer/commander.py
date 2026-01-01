@@ -29,9 +29,60 @@ def debug_log(msg):
 
 class PrinterCommander:
     def __init__(self):
-        logger.info("PrinterCommander Initialized (v2.1 - 3MF Sanitization Active + aiomqtt)")
+        logger.info("PrinterCommander Initialized (v2.2 - 3MF Sanitization + Calibration Jogging)")
 
-    async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int], is_calibration_due: bool = True) -> None:
+    async def send_raw_gcode(self, printer: Printer, gcode_lines: List[str]) -> None:
+        """Sends a raw G-code sequence to the printer via MQTT."""
+        if not printer.ip_address or not printer.access_code:
+            raise ValueError(f"Printer {printer.serial} missing IP or Access Code")
+
+        gcode_text = "\n".join(gcode_lines)
+        logger.info(f"Sending Raw G-Code to {printer.serial}: {gcode_lines}")
+        
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        
+        try:
+            async with Client(
+                hostname=printer.ip_address,
+                port=8883,
+                username="bblp",
+                password=printer.access_code,
+                tls_context=context,
+                protocol=mqtt_base.MQTTv311,
+                identifier=f"cmd_raw_{printer.serial}",
+                timeout=10.0
+            ) as client:
+                topic = f"device/{printer.serial}/request"
+                payload = {
+                    "print": {
+                        "sequence_id": str(int(time.time() % 10000)),
+                        "command": "gcode_line",
+                        "param": gcode_text + "\n"
+                    }
+                }
+                await client.publish(topic, json.dumps(payload))
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.error(f"Failed to send raw G-code to {printer.serial}: {e}")
+            raise e
+
+    async def jog_axis(self, printer: Printer, axis: str, distance: float, speed: int = 1500) -> None:
+        """Jogs a specific axis by a distance using relative positioning."""
+        axis = axis.upper()
+        if axis not in ["X", "Y", "Z"]:
+            raise ValueError(f"Invalid axis: {axis}")
+
+        gcode = [
+            "G91",                  # Relative positioning
+            f"G1 {axis}{distance} F{speed}",
+            "G90"                   # Restore absolute positioning
+        ]
+        await self.send_raw_gcode(printer, gcode)
+
+
+    async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int], is_calibration_due: bool = True, part_height_mm: Optional[float] = None) -> None:
         """
         High-level orchestrator to start a print job.
         1. Sanitizes the 3MF file (removes color metadata).
@@ -92,7 +143,8 @@ class PrinterCommander:
                 filament_color=req_color,
                 filament_type=req_material,
                 printer_type=printer.type, 
-                is_calibration_due=is_calibration_due
+                is_calibration_due=is_calibration_due,
+                part_height_mm=part_height_mm
             )
             upload_source_path = str(sanitized_path)
             

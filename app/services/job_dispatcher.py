@@ -9,16 +9,8 @@ from app.models.core import Printer, Job, PrinterStatusEnum, JobStatusEnum, Prin
 from app.services.logic.color_matcher import color_matcher
 from app.services.printer.commander import PrinterCommander
 
+import os
 logger = logging.getLogger("JobDispatcher")
-
-class JobDispatcher:
-    """
-    FMS Job Dispatcher - Phase 9
-    Handles intelligent routing of jobs to printers based on active AMS telemetry.
-    """
-    
-    def __init__(self):
-        self.commander = PrinterCommander()
 
     async def dispatch_next_job(self, session: AsyncSession):
         """
@@ -39,6 +31,7 @@ class JobDispatcher:
             return
 
         # 2. Fetch Pending Jobs (by priority)
+        # Robust filtering to handle potential Enum vs String mismatches
         job_stmt = (
             select(Job)
             .where(Job.status == JobStatusEnum.PENDING)
@@ -61,8 +54,6 @@ class JobDispatcher:
 
             for printer in printers:
                 # Rule: Capability (Continuous -> A1)
-                # We check job metadata or product associated with it
-                # For this implementation, we assume continuous jobs are marked in metadata
                 is_continuous = job.job_metadata.get("is_continuous", False)
                 if is_continuous and printer.type != PrinterTypeEnum.A1:
                     continue
@@ -85,8 +76,6 @@ class JobDispatcher:
         Finds a slot that matches the job's primary filament requirement.
         Returns (slot_id, ams_mapping) or None.
         """
-        # Assuming single-material job for now as per "slot_id" requirement
-        # Simple Case: Job.filament_requirements[0]
         try:
             req = job.filament_requirements[0]
             req_material = req.get("material")
