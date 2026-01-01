@@ -17,15 +17,20 @@ logger = logging.getLogger("PrinterCommander")
 
 # DEBUG LOGGER
 def debug_log(msg):
-    with open("debug_commander.log", "a", encoding="utf-8") as f:
-        import datetime
-        f.write(f"[{datetime.datetime.now()}] {msg}\n")
+    try:
+        log_dir = Path("temp")
+        log_dir.mkdir(exist_ok=True)
+        log_path = log_dir / "debug_commander.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{msg}\n")
+    except:
+        pass
 
 class PrinterCommander:
     def __init__(self):
         logger.info("PrinterCommander Initialized (v2.1 - 3MF Sanitization Active + aiomqtt)")
 
-    async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int]) -> None:
+    async def start_job(self, printer: Printer, job: Job, ams_mapping: List[int], is_calibration_due: bool = True) -> None:
         """
         High-level orchestrator to start a print job.
         1. Sanitizes the 3MF file (removes color metadata).
@@ -69,7 +74,14 @@ class PrinterCommander:
             ams_index = max(0, target_slot - 1)
 
             logger.info(f"Sanitizing file for Job {job.id}: {file_path} -> T0 Master (Target: Slot {target_slot})")
-            sanitized_path = await sanitizer.sanitize_and_repack(Path(file_path), target_index=ams_index, printer_type=printer.type)
+            logger.info(f"Dynamic Calibration: Due={is_calibration_due}")
+            
+            sanitized_path = await sanitizer.sanitize_and_repack(
+                Path(file_path), 
+                target_index=ams_index, 
+                printer_type=printer.type, 
+                is_calibration_due=is_calibration_due
+            )
             upload_source_path = str(sanitized_path)
             
             # Native Strategy: Identity Mapping
@@ -110,7 +122,8 @@ class PrinterCommander:
                     access_code=printer.access_code,
                     filename=remote_filename,
                     ams_mapping=final_mapping,
-                    local_file_path=upload_source_path 
+                    local_file_path=upload_source_path,
+                    use_calibration=is_calibration_due
                 )
             except Exception as e:
                 raise Exception(f"MQTT Start Failed: {e}") from e
@@ -279,7 +292,8 @@ class PrinterCommander:
         access_code: str, 
         filename: str, 
         ams_mapping: List[int],
-        local_file_path: Optional[str] = None
+        local_file_path: Optional[str] = None,
+        use_calibration: bool = True
     ) -> None:
         """
         Connects to MQTT, sends print command, and disconnects.
@@ -291,7 +305,7 @@ class PrinterCommander:
             return
         # -----------------------
 
-        logger.info(f"Sending Print Command to {serial} ({ip})...")
+        logger.info(f"Sending Print Command to {serial} ({ip})... (Calibration={use_calibration})")
         
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -366,9 +380,9 @@ class PrinterCommander:
                         "md5": None,
                         "timelapse": False,
                         "bed_type": "auto", 
-                        "bed_levelling": True,
-                        "flow_cali": True,
-                        "vibration_cali": True,
+                        "bed_levelling": use_calibration,
+                        "flow_cali": use_calibration,
+                        "vibration_cali": use_calibration,
                         "layer_inspect": True,
                         "layer_inspect": True,
                         "use_ams": True,

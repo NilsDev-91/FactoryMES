@@ -33,6 +33,7 @@ export default function EditProductPage() {
     const [description, setDescription] = useState('');
     const [material, setMaterial] = useState('PLA');
     const [colorHex, setColorHex] = useState('#ffffff');
+    const [printFileId, setPrintFileId] = useState<number | null>(null);
     const [formReady, setFormReady] = useState(false);
 
     // File State (Optional for Edit)
@@ -49,8 +50,9 @@ export default function EditProductPage() {
             setName(product.name || '');
             setSku(product.sku || '');
             setDescription(product.description || '');
-            setMaterial(product.required_filament_type || 'PLA');
-            setColorHex(product.required_filament_color || '#ffffff');
+            // material and colorHex removed as they are variant properties now, 
+            // but we keep the form for basic parent metadata
+            setPrintFileId(product.print_file_id || null);
             setFormReady(true);
         }
     }, [product, formReady]);
@@ -84,7 +86,7 @@ export default function EditProductPage() {
         e.preventDefault();
 
         try {
-            let filePath = product.file_path_3mf;
+            let activePrintFileId = printFileId;
 
             // Step 1: Upload File (If new file selected)
             if (file) {
@@ -99,18 +101,16 @@ export default function EditProductPage() {
 
                 if (!uploadRes.ok) throw new Error('File upload failed');
                 const uploadData = await uploadRes.json();
-                filePath = uploadData.file_path;
+                activePrintFileId = uploadData.id;
             }
 
             // Step 2: Update Product
             setStatus('saving');
             const productPayload = {
                 name,
-                sku, // SKU might be readonly in some systems, but allowing edit for now
+                sku,
                 description,
-                required_filament_type: material,
-                required_filament_color: colorHex,
-                file_path_3mf: filePath
+                print_file_id: activePrintFileId
             };
 
             const updateRes = await fetch(`http://127.0.0.1:8000/api/products/${id}`, {
@@ -196,49 +196,18 @@ export default function EditProductPage() {
                             />
                         </div>
 
-                        {/* Material Requirements */}
-                        <div className="grid grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Material</label>
-                                <select
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white focus:border-purple-500 focus:outline-none transition-colors appearance-none"
-                                    value={material}
-                                    onChange={(e) => setMaterial(e.target.value)}
-                                >
-                                    <option value="PLA">PLA</option>
-                                    <option value="PETG">PETG</option>
-                                    <option value="ABS">ABS</option>
-                                    <option value="ASA">ASA</option>
-                                    <option value="TPU">TPU</option>
-                                </select>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-slate-500 tracking-wider">Color</label>
-                                <div className="flex gap-3">
-                                    <div className="relative w-12 h-[46px] rounded-lg overflow-hidden border border-slate-800 shrink-0">
-                                        <input
-                                            type="color"
-                                            className="absolute -top-2 -left-2 w-16 h-16 cursor-pointer"
-                                            value={colorHex}
-                                            onChange={(e) => setColorHex(e.target.value)}
-                                        />
-                                    </div>
-                                    <input
-                                        type="text"
-                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white font-mono focus:border-purple-500 focus:outline-none transition-colors uppercase"
-                                        value={colorHex}
-                                        onChange={(e) => setColorHex(e.target.value)}
-                                        maxLength={7}
-                                    />
-                                </div>
-                            </div>
+                        {/* Material Requirements - HIDDEN for Parent Edit as they belong to Variants now */}
+                        <div className="p-4 bg-slate-800/30 rounded-xl border border-slate-800/50">
+                            <p className="text-xs text-slate-400 italic">
+                                Note: Specific filament and color requirements are managed at the Variant level.
+                                Updates here modify the Master definition.
+                            </p>
                         </div>
 
-                        {/* File Upload (Optional) */}
                         <div className="space-y-2">
                             <label className="text-xs uppercase font-bold text-slate-500 tracking-wider flex justify-between">
                                 <span>Print File (.3mf)</span>
-                                {product?.file_path_3mf && <span className="text-green-400 normal-case font-normal text-xs">Current file exists</span>}
+                                {product?.print_file_id && <span className="text-green-400 normal-case font-normal text-xs">Current file exists</span>}
                             </label>
                             <div
                                 onDragEnter={handleDrag}

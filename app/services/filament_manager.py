@@ -78,16 +78,16 @@ class FilamentManager:
         for slot in printer_inventory:
             # Skip empty slots (no color or no filament remaining)
             # Note: explicit check for empty string or None
-            if not slot.tray_color: 
+            if not slot.color_hex: 
                 continue
             
             # If remaining_percent is None or 0, we might want to skip, 
             # but requirements only say "Skip empty slots".
             # Usually empty means no tray inserted or no color data.
-            # I will assume tray_color is the indicator.
+            # I will assume color_hex is the indicator.
 
             try:
-                delta_e = calculate_delta_e(slot.tray_color, target_hex)
+                delta_e = calculate_delta_e(slot.color_hex, target_hex)
             except ValueError:
                 # Handle invalid hex in inventory gracefully
                 continue
@@ -128,16 +128,16 @@ class FilamentManager:
             # 3. Check for match in printer slots
             match_found = False
             for slot in printer.ams_slots:
-                if not slot.tray_color or not slot.tray_type:
+                if not slot.color_hex or not slot.material:
                     continue
                 
                 # Material Match
-                if slot.tray_type.upper() != target_material:
+                if slot.material.upper() != target_material:
                     continue
                 
                 # Color Match
                 try:
-                    de = calculate_delta_e(slot.tray_color, target_hex)
+                    de = calculate_delta_e(slot.color_hex, target_hex)
                     if de < 5.0:
                         match_found = True
                         break

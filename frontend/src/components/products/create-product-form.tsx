@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
+import { productFormSchema, type ProductFormValues } from '@/lib/validations/product';
 import { Package, FileText, AlertTriangle, Loader2, CheckCircle2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -18,19 +19,7 @@ function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
 }
 
-/**
- * Form Schema for Product Creation
- * Updated for Master-Variant architecture: Link to PrintFile ID and Procedural Variants.
- */
-const productFormSchema = z.object({
-    name: z.string().min(3, "Product name must be at least 3 characters"),
-    sku: z.string().optional(),
-    description: z.string().optional(),
-    print_file_id: z.number({ required_error: "Print file is required" }),
-    generate_variants_for_profile_ids: z.array(z.string()).optional().default([]),
-});
-
-type ProductFormValues = z.infer<typeof productFormSchema>;
+// Schema moved to @/lib/validations/product
 
 export function CreateProductForm() {
     const router = useRouter();
@@ -47,6 +36,9 @@ export function CreateProductForm() {
             description: '',
             print_file_id: undefined,
             generate_variants_for_profile_ids: [],
+            // Phase 6: Use empty string for number inputs to keep them "controlled" from mount
+            part_height_mm: '',
+            is_continuous_printing: false,
         }
     });
 
@@ -72,12 +64,16 @@ export function CreateProductForm() {
 
         try {
             // Strict DTO Construction for Backend
-            // Ensure payload matches: { name, sku, print_file_id, generate_variants_for_profile_ids }
+            // Ensure payload matches ProductCreate schema
             const payload = {
                 name: data.name,
                 sku: data.sku || undefined, // Send undefined if empty string to let backend auto-generate or handle it
                 print_file_id: data.print_file_id,
-                generate_variants_for_profile_ids: data.generate_variants_for_profile_ids || []
+                generate_variants_for_profile_ids: data.generate_variants_for_profile_ids || [],
+                // Phase 6: Continuous Printing fields
+                // Normalize empty string back to null for Backend
+                part_height_mm: (typeof data.part_height_mm === 'number') ? data.part_height_mm : null,
+                is_continuous_printing: data.is_continuous_printing || false,
             };
 
             // Debug Logging
@@ -158,6 +154,88 @@ export function CreateProductForm() {
                         placeholder="Optional details for identification..."
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white min-h-[100px] focus:border-blue-500 focus:outline-none transition-all"
                     />
+                </div>
+            </div>
+
+            {/* Phase 6: Continuous Printing (Automation Safety) */}
+            <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                    <div className="w-1 h-4 bg-amber-500 rounded-full" />
+                    <label className="text-xs uppercase font-bold text-slate-300 tracking-widest">Continuous Printing (Automation)</label>
+                </div>
+
+                <div className="bg-slate-950/30 p-4 rounded-xl border border-slate-800/50 space-y-4">
+                    {/* Part Height Input */}
+                    <div className="space-y-2">
+                        <label className="text-[10px] uppercase font-bold text-slate-500 tracking-widest ml-1">
+                            Bauteilhöhe (mm)
+                        </label>
+                        <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            {...form.register('part_height_mm', {
+                                valueAsNumber: true,
+                                setValueAs: (v) => v === "" ? null : parseFloat(v)
+                            })}
+                            placeholder="z.B. 75.0"
+                            className={cn(
+                                "w-full bg-slate-950 border rounded-xl px-4 py-3 text-white focus:outline-none transition-all",
+                                form.formState.errors.part_height_mm ? "border-red-500/50 focus:border-red-500" : "border-slate-800 focus:border-amber-500"
+                            )}
+                        />
+                        <p className="text-[10px] text-slate-500 ml-1">
+                            Höhe des gedruckten Teils für automatische Auswerfer-Berechnung.
+                        </p>
+                    </div>
+
+                    {/* Continuous Printing Toggle with Smart Interlock */}
+                    <div className="flex items-center justify-between p-3 bg-slate-900 rounded-lg border border-slate-800">
+                        <div className="space-y-1">
+                            <label className="text-sm font-bold text-white cursor-pointer">
+                                Continuous Printing (Auto-Sweep)
+                            </label>
+                            <p className={cn(
+                                "text-[10px]",
+                                (form.watch('part_height_mm') ?? 0) >= 50 ? "text-slate-500" : "text-amber-400"
+                            )}>
+                                {(form.watch('part_height_mm') ?? 0) >= 50
+                                    ? "Automatisches Auswerfen nach Druckende aktivieren."
+                                    : "⚠️ Erfordert Bauteilhöhe ≥ 50mm (Gantry Sweep Sicherheit)"
+                                }
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const current = form.watch('is_continuous_printing');
+                                const height = form.watch('part_height_mm') ?? 0;
+                                if (height >= 50 || current) {
+                                    form.setValue('is_continuous_printing', !current, { shouldValidate: true });
+                                }
+                            }}
+                            disabled={(form.watch('part_height_mm') ?? 0) < 50 && !form.watch('is_continuous_printing')}
+                            className={cn(
+                                "relative w-12 h-6 rounded-full transition-all duration-200",
+                                form.watch('is_continuous_printing')
+                                    ? "bg-amber-500 shadow-lg shadow-amber-500/30"
+                                    : "bg-slate-700",
+                                (form.watch('part_height_mm') ?? 0) < 50 && "opacity-50 cursor-not-allowed"
+                            )}
+                        >
+                            <div className={cn(
+                                "absolute top-1 w-4 h-4 bg-white rounded-full transition-all duration-200 shadow-md",
+                                form.watch('is_continuous_printing') ? "left-7" : "left-1"
+                            )} />
+                        </button>
+                    </div>
+
+                    {form.formState.errors.is_continuous_printing && (
+                        <div className="flex items-center gap-2 text-xs text-red-500 ml-1 animate-in slide-in-from-left-2 duration-200">
+                            <AlertTriangle size={12} />
+                            <span>{form.formState.errors.is_continuous_printing.message}</span>
+                        </div>
+                    )}
                 </div>
             </div>
 

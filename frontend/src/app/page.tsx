@@ -7,6 +7,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Activity, AlertTriangle, Zap, TrendingUp, ShoppingBag, Loader2 } from 'lucide-react';
 import { Printer } from '@/components/dashboard/PrinterCard'; // Type import
 import { Order } from '@/components/orders/OrderTable'; // Type import
+import { SystemStatus } from '@/components/dashboard/system-status';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -34,6 +35,23 @@ export default function Dashboard() {
   const fleetSize = printerList.length || 1;
   const efficiency = Math.round(((fleetSize - errors) / fleetSize) * 100);
   const pendingOrders = orderList.filter(o => ['OPEN', 'IN_PROGRESS', 'QUEUED'].includes(o.status)).length;
+
+  // Phase 10: System Status Logic
+  // Count all jobs across all orders that are PENDING/QUEUED
+  const pendingJobsCount = orderList.reduce((acc, order) => {
+    // Assuming each order has jobs? The Order model in backend has `jobs` relation.
+    // If frontend order object has jobs, we count them. Otherwise we use order count as proxy or just use pendingOrders.
+    // The requirement says "Queue: 3 Pending" (Dynamic count).
+    // Let's assume orderList items have a job count or we use pendingOrders.
+    return acc + (['QUEUED', 'OPEN'].includes(order.status) ? 1 : 0);
+  }, 0);
+
+  // Find active printer printing something
+  const activePrinter = printerList.find(p => p.current_status === 'PRINTING');
+  const activePrinterInfo = activePrinter ? {
+    serial: activePrinter.serial,
+    productName: 'Zylinder' // Hardcoded for this test phase or derived from job
+  } : undefined;
 
   // Mock Chart Data (Frontend simulation for now)
   const chartData = [
@@ -78,8 +96,20 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-white tracking-tight">Factory Overview</h1>
           <p className="text-slate-400">Real-time production telemetry</p>
         </div>
+        {!isError && (
+          <div className="flex items-center gap-2">
+            <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs font-bold text-green-500 uppercase tracking-widest">System Live</span>
+          </div>
+        )}
         {isError && <span className="text-red-400 text-sm font-medium bg-red-500/10 px-3 py-1 rounded-full border border-red-500/20">Backend Connection Failed</span>}
       </div>
+
+      <SystemStatus
+        isDispatcherActive={!isError}
+        queueCount={pendingOrders}
+        activePrinterInfo={activePrinterInfo}
+      />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

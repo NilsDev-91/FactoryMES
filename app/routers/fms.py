@@ -31,10 +31,10 @@ async def get_available_materials(session: AsyncSession = Depends(get_session)):
 
     for slot in all_slots:
         # Skip empty slots
-        if not slot.tray_type or not slot.tray_color:
+        if not slot.material or not slot.color_hex:
             continue
             
-        key = (slot.tray_type, slot.tray_color)
+        key = (slot.material, slot.color_hex)
         
         if key not in aggregator:
             aggregator[key] = {

@@ -5,8 +5,9 @@ from .core import PrinterStatusEnum, PrinterTypeEnum, ClearingStrategyEnum
 class AmsSlotRead(BaseModel):
     ams_index: int
     slot_index: int
-    tray_color: Optional[str] = None
-    tray_type: Optional[str] = None
+    slot_id: int
+    color_hex: Optional[str] = None
+    material: Optional[str] = None
     remaining_percent: Optional[int] = None
 
     class Config:
@@ -28,6 +29,8 @@ class PrinterRead(BaseModel):
     can_auto_eject: bool
     clearing_strategy: ClearingStrategyEnum
     thermal_release_temp: float
+    jobs_since_calibration: int
+    calibration_interval: int
     ams_slots: List[AmsSlotRead] = []
 
     class Config:
@@ -49,4 +52,6 @@ class PrinterUpdate(BaseModel):
     current_temp_nozzle: Optional[float] = None
     current_temp_bed: Optional[float] = None
     current_progress: Optional[int] = None
+    jobs_since_calibration: Optional[int] = None
+    calibration_interval: Optional[int] = None
 

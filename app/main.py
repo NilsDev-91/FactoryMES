@@ -40,34 +40,40 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ DB Connection Failed: {e}")
         raise RuntimeError("Database unreachable") from e
     
-    # 2. Start MQTT Workers (The Ears)
-    mqtt_worker = PrinterMqttWorker()
+    # 2. Start MQTT Workers
     app.state.mqtt_tasks = {}
-    
-    async with async_session_maker() as session:
-        result = await session.execute(select(Printer))
-        printers_list = result.scalars().all()
-        
-        for printer in printers_list:
-            if printer.ip_address and printer.access_code:
-                task = asyncio.create_task(
-                    mqtt_worker.start_listening(printer.ip_address, printer.access_code, printer.serial)
-                )
-                app.state.mqtt_tasks[printer.serial] = task
-                logger.info(f"👂 MQTT Listener started for {printer.serial}")
+    try:
+        mqtt_worker = PrinterMqttWorker()
+        async with async_session_maker() as session:
+            result = await session.execute(select(Printer))
+            printers_list = result.scalars().all()
+            
+            for printer in printers_list:
+                if printer.ip_address and printer.access_code:
+                    task = asyncio.create_task(
+                        mqtt_worker.start_listening(printer.ip_address, printer.access_code, printer.serial)
+                    )
+                    app.state.mqtt_tasks[printer.serial] = task
+                    logger.info(f"👂 MQTT Listener started for {printer.serial}")
+    except Exception as e:
+        logger.error(f"Lifespan ERROR: Failed to initialize MQTT workers: {e}", exc_info=True)
 
-    # 3. Start Production Dispatcher (The Brain & Hands)
-    dispatcher = ProductionDispatcher()
-    # Wir speichern die Instanz in app.state, um sie beim Shutdown zu stoppen
-    app.state.dispatcher = dispatcher
-    # Startet die Endlosschleife im Hintergrund
-    app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
-    logger.info("🧠 Production Dispatcher Loop started.")
+    # 3. Start Production Dispatcher
+    try:
+        logger.info("🧠 Launching Production Dispatcher...")
+        dispatcher = ProductionDispatcher()
+        app.state.dispatcher = dispatcher
+        app.state.dispatcher_task = asyncio.create_task(dispatcher.start())
+    except Exception as e:
+        logger.error(f"Lifespan ERROR: Failed to initialize Production Dispatcher: {e}", exc_info=True)
 
     # 4. Start eBay Order Processor
-    app.state.order_processor = order_processor
-    app.state.order_processor_task = asyncio.create_task(order_processor.start_loop())
-    logger.info("📦 eBay Order Processor Loop started.")
+    try:
+        app.state.order_processor = order_processor
+        app.state.order_processor_task = asyncio.create_task(order_processor.start_loop())
+        logger.info("📦 eBay Order Processor Loop started.")
+    except Exception as e:
+        logger.error(f"Lifespan ERROR: Failed to initialize eBay Order Processor: {e}", exc_info=True)
 
     yield
     

@@ -28,14 +28,18 @@ class PrinterTypeEnum(str, Enum):
     X1C = "X1C"
     P1P = "P1P"
     A1_MINI = "A1 Mini"
+    X1E = "X1E"
 
 class PrinterStatusEnum(str, Enum):
     IDLE = "IDLE"
     PRINTING = "PRINTING"
     AWAITING_CLEARANCE = "AWAITING_CLEARANCE"
     COOLDOWN = "COOLDOWN"   # Waiting for thermal release
-    EJECTING = "EJECTING"   # Execution of clearing G-code
+    CLEARING_BED = "CLEARING_BED"   # Execution of clearing G-code
     OFFLINE = "OFFLINE"
+    # Phase 7: HMS Watchdog States
+    ERROR = "ERROR"   # Hardware error detected via HMS
+    PAUSED = "PAUSED"   # User intervention required (e.g. filament runout)
 
 class ClearingStrategyEnum(str, Enum):
     MANUAL = "MANUAL"
@@ -68,6 +72,10 @@ class Printer(SQLModel, table=True):
     clearing_strategy: ClearingStrategyEnum = Field(default=ClearingStrategyEnum.MANUAL)
     thermal_release_temp: float = Field(default=29.0) # Release part when bed < this temp
     
+    # Smart Calibration Logic
+    jobs_since_calibration: int = Field(default=0)
+    calibration_interval: int = Field(default=5)
+    
     current_progress: int = Field(default=0) # Percentage 0-100
     remaining_time: int = Field(default=0) # Minutes
     
@@ -76,6 +84,15 @@ class Printer(SQLModel, table=True):
     ams_data: List[dict] = Field(default=[], sa_column=Column(JSON))
     
     current_job_id: Optional[int] = Field(default=None)
+
+    # Phase 7: HMS Watchdog Error Tracking
+    last_error_code: Optional[str] = Field(default=None, description="Last HMS error code")
+    last_error_time: Optional[datetime] = Field(
+        default=None, 
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp of last error"
+    )
+    last_error_description: Optional[str] = Field(default=None, description="Human-readable error description")
 
     jobs: List["Job"] = Relationship(back_populates="assigned_printer")
     ams_slots: List["AmsSlot"] = Relationship(back_populates="printer")
@@ -94,9 +111,16 @@ class Job(SQLModel, table=True):
     # Requirements derived from Product/Variation
     filament_requirements: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     
+    # Job Metadata (e.g. model_height_mm)
+    job_metadata: Optional[dict] = Field(default={}, sa_column=Column(JSON))
+    
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True)
     )
 
     order: Optional["Order"] = Relationship(back_populates="jobs")
@@ -148,6 +172,16 @@ class Product(SQLModel, table=True):
     
     # New: JSON Requirements for multi-color/master slicing
     filament_requirements: Optional[List[dict]] = Field(default=None, sa_column=Column(JSON))
+
+    # Phase 6: Continuous Printing (Automation Safety)
+    part_height_mm: Optional[float] = Field(
+        default=None, 
+        description="Part height in mm. Required for Gantry Sweep safety (min 50mm)."
+    )
+    is_continuous_printing: bool = Field(
+        default=False,
+        description="Enable automatic bed clearing via Gantry Sweep. Requires part_height_mm >= 50mm."
+    )
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from pydantic import BaseModel, Field
+from app.services.logic.gcode_modifier import GCodeModifier
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class FileProcessorService:
         "Metadata/model_settings.config"
     }
 
-    async def sanitize_and_repack(self, source_path: Path, target_index: int, printer_type: Optional[str] = None) -> Path:
+    async def sanitize_and_repack(self, source_path: Path, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
         """
         Asynchronously sanitizes the provided 3MF file.
         Injects the target tool index directly into G-code and Metadata.
@@ -64,12 +65,12 @@ class FileProcessorService:
 
         loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, printer_type)
+            return await loop.run_in_executor(None, self._sync_sanitize, source_path, target_index, printer_type, is_calibration_due)
         except Exception as e:
             logger.error(f"Failed to sanitize file {source_path}: {e}", exc_info=True)
             raise FileSanitizationError(f"Sanitization failed: {str(e)}") from e
 
-    def _sync_sanitize(self, source_path: Path, target_index: int, printer_type: Optional[str] = None) -> Path:
+    def _sync_sanitize(self, source_path: Path, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> Path:
         """
         Synchronous core logic: Excludes bad files, neutralizes metadata, normalizes G-code.
         """
@@ -107,7 +108,9 @@ class FileProcessorService:
                     elif re.match(r"Metadata/plate_.*\.gcode$", file_name):
                         logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type})")
                         original_gcode = source_zip.read(file_name)
-                        new_gcode_content = self._normalize_gcode(original_gcode, target_index, printer_type)
+                        logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type})")
+                        original_gcode = source_zip.read(file_name)
+                        new_gcode_content = self._normalize_gcode(original_gcode, target_index, printer_type, is_calibration_due)
                         active_gcode_filename = file_name
                         target_zip.writestr(item, new_gcode_content)
 
@@ -124,7 +127,7 @@ class FileProcessorService:
                              try:
                                 with source_zip.open(expected_gcode_name) as gcode_file:
                                     raw_gcode = gcode_file.read()
-                                    current_gcode_content = self._normalize_gcode(raw_gcode, target_index, printer_type)
+                                    current_gcode_content = self._normalize_gcode(raw_gcode, target_index, printer_type, is_calibration_due)
                              except KeyError:
                                 logger.warning(f"{expected_gcode_name} not found for MD5 calculation.")
                                 current_gcode_content = b""
@@ -232,7 +235,7 @@ class FileProcessorService:
             logger.warning(f"Failed to parse metadata JSON: {e}. Returning original.")
             return content
 
-    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None) -> bytes:
+    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True) -> bytes:
         """
         Normalizes the G-code to T0 Master protocol and injects Auto-Ejection footer.
         1. Injects Cache Busting Header (M620 S255, T255).
@@ -245,6 +248,9 @@ class FileProcessorService:
         # 1. Regex replace all occurrences of T\d+ with T{target_index}.
         # This forces the printer to use the physical slot mapped to target_index.
         sanitized_text = re.sub(r'\bT[0-9]+\b', f'T{target_index}', text)
+        
+        # 1.5. Dynamic Calibration Optimization
+        sanitized_text = GCodeModifier.optimize_start_gcode(sanitized_text, is_calibration_due)
         
         # 2. Construct Injection Sequence (The "Native Select")
         injection_sequence = (

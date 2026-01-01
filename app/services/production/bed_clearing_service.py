@@ -15,64 +15,37 @@ class BedClearingService:
         self.temp_dir = Path(tempfile.gettempdir()) / "factoryos_maintenance"
         self.temp_dir.mkdir(exist_ok=True)
 
-    def generate_clearing_gcode(self, printer: Printer) -> str:
+    def generate_clearing_gcode(self, printer: Printer, **kwargs) -> str:
         """
-        Generates strategy-specific G-code for bed clearing.
+        Generates strategy-specific G-code for bed clearing using Dynamic Factory.
+        Includes safety guards for temperature and state.
         """
-        strategy = printer.clearing_strategy
+        from app.services.logic.gcode_factory import GCodeFactory
         
-        gcode = [
-            "; --- FACTORYOS AUTO-CLEARING ---",
+        # 1. Safety Guards
+        # Force cold nozzle to prevent oozing/drooping during clearing moves
+        safety_header = [
+            "; --- FACTORYOS SAFETY GUARDS ---",
             "M1002 gcode_claim_action : 0",
-            "M400 ; Finish moves",
-            "G90 ; Absolute positioning",
-            "M83 ; Relative extrusion",
+            "M109 S0   ; Cooldown nozzle immediately",
+            "M140 S0   ; Turn off bed (redundant safety)",
+            "G90       ; Absolute positioning",
+            "M83       ; Relative extrusion",
+            "M400",
+            "; --- END SAFETY ---"
         ]
 
-        if strategy == ClearingStrategyEnum.A1_INERTIAL_FLING:
-            # A1 "Y-Axis Fling" strategy
-            # Move X to center, then rapid Y moves
-            gcode += [
-                "G1 X128 Y200 F12000 ; Move to back center",
-                "M400",
-                "; --- THE FLING ---",
-                "G1 Y250 F12000",
-                "G1 Y10 F18000 ; Rapid forward",
-                "G1 Y250 F18000 ; Rapid backward",
-                "G1 Y10 F21000 ; Even faster forward",
-                "M400",
-                "G1 X20 Y50 F12000 ; Success position",
-            ]
+        # 2. Strategy Generation
+        strategy = GCodeFactory.get_strategy(printer.type)
+        strategy_code = strategy.generate_code(printer, **kwargs)
 
-        elif strategy == ClearingStrategyEnum.X1_MECHANICAL_SWEEP:
-            # X1 "Mechanical Sweep" strategy
-            # CRITICAL: Z-Hop 2mm above max layer or just safe height
-            gcode += [
-                "G1 Z10 F600 ; Safe Z height",
-                "G1 X240 Y240 F12000 ; Move to rear far corner",
-                "M400",
-                "; --- THE SWEEP ---",
-                "G1 X30 Y240 F12000 ; Sweep across while staying back",
-                "G1 X30 Y30 F12000  ; Sweep forward",
-                "G1 X240 Y30 F12000 ; Sweep across right",
-                "M400",
-                "G1 X240 Y240 F12000 ; Back to safety",
-            ]
-        
-        else:
-            # Fallback/Manual
-            gcode.append("; Strategy MANUAL or unknown. No moves generated.")
+        return "\n".join(safety_header + [strategy_code] + ["M400"])
 
-        gcode.append("M400")
-        gcode.append("; --- END AUTO-CLEARING ---")
-        
-        return "\n".join(gcode)
-
-    def create_maintenance_3mf(self, printer: Printer) -> Path:
+    def create_maintenance_3mf(self, printer: Printer, **kwargs) -> Path:
         """
         Packages the clearing G-code into a .3mf archive.
         """
-        gcode_content = self.generate_clearing_gcode(printer)
+        gcode_content = self.generate_clearing_gcode(printer, **kwargs)
         
         # Create a tiny 3MF structure
         output_path = self.temp_dir / f"clear_plate_{printer.serial}.3mf"

@@ -59,6 +59,7 @@ class ProductCreateDTO(BaseModel):
 
 class ProductUpdateDTO(BaseModel):
     name: Optional[str] = None
+    sku: Optional[str] = None
     description: Optional[str] = None
     print_file_id: Optional[int] = None
     is_catalog_visible: Optional[bool] = None
@@ -146,13 +147,14 @@ class ProductService:
                 )
                 session.add(req)
 
+        master_id = master_product.id
         await session.commit()
         
         # 5. Full Reload to prevent MissingGreenlet/ResponseValidation errors
         # We must load all relation dependencies that the response model expects
         statement = (
             select(Product)
-            .where(Product.id == master_product.id)
+            .where(Product.id == master_id)
             .options(
                 selectinload(Product.print_file),
                 selectinload(Product.variants).selectinload(ProductSKU.print_file),
@@ -164,6 +166,7 @@ class ProductService:
 
     @staticmethod
     async def get_product(product_id: int, session: AsyncSession) -> Optional[Product]:
+        # 1. Try Direct Lookup
         statement = (
             select(Product)
             .where(Product.id == product_id)
@@ -174,7 +177,17 @@ class ProductService:
             )
         )
         result = await session.execute(statement)
-        return result.scalar_one_or_none()
+        product = result.scalar_one_or_none()
+
+        if product:
+            return product
+
+        # 2. Fallback: Lookup via ProductSKU ID (ID resolution for catalog)
+        sku = await session.get(ProductSKU, product_id)
+        if sku and sku.product_id:
+            return await ProductService.get_product(sku.product_id, session)
+
+        return None
 
     @staticmethod
     async def list_products(session: AsyncSession) -> List[Product]:
@@ -190,12 +203,20 @@ class ProductService:
 
     @staticmethod
     async def update_product(product_id: int, dto: ProductUpdateDTO, session: AsyncSession) -> Optional[Product]:
-        product = await session.get(Product, product_id)
+        product = await ProductService.get_product(product_id, session)
         if not product:
             return None
 
+        # Update Parent Product
         if dto.name is not None:
             product.name = dto.name
+        if dto.sku is not None:
+            # Check for collision if changing SKU
+            if dto.sku != product.sku:
+                 existing = await session.execute(select(Product).where(Product.sku == dto.sku))
+                 if existing.scalar_one_or_none():
+                      raise HTTPException(status_code=409, detail=f"SKU '{dto.sku}' already exists.")
+            product.sku = dto.sku
         if dto.description is not None:
             product.description = dto.description
         if dto.print_file_id is not None:
@@ -203,7 +224,18 @@ class ProductService:
         if dto.is_catalog_visible is not None:
             product.is_catalog_visible = dto.is_catalog_visible
 
+        # Sync to Master SKU (the one directly owned by this product, no parent)
+        # This keeps the catalog view in sync with the master product data
+        for variant in product.variants:
+            if variant.parent_id is None: # This is the master
+                if dto.name is not None:
+                    variant.name = dto.name
+                if dto.sku is not None:
+                    variant.sku = dto.sku
+                if dto.print_file_id is not None:
+                    variant.print_file_id = dto.print_file_id
+
+        actual_id = product.id
         session.add(product)
         await session.commit()
-        await session.refresh(product)
-        return product
+        return await ProductService.get_product(actual_id, session)

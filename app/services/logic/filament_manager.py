@@ -302,16 +302,16 @@ class FilamentManager:
                     continue
                 
                 # 1. Strict Material Match
-                if not slot.tray_type or slot.tray_type.lower() != req_material.lower():
-                    # logger.debug(f"Slot {pid} mismatch type: {slot.tray_type} vs {req_material}")
+                if not slot.material or slot.material.lower() != req_material.lower():
+                    # logger.debug(f"Slot {pid} mismatch type: {slot.material} vs {req_material}")
                     continue
                 
                 # 2. Color Match
-                if not slot.tray_color:
+                if not slot.color_hex:
                     continue
                     
-                delta_e = calculate_delta_e_2000(req_color, slot.tray_color)
-                # logger.debug(f"Slot {pid} color {slot.tray_color} vs {req_color} -> dE={delta_e}")
+                delta_e = calculate_delta_e_2000(req_color, slot.color_hex)
+                # logger.debug(f"Slot {pid} color {slot.color_hex} vs {req_color} -> dE={delta_e}")
                 
                 if delta_e < min_delta_e:
                     min_delta_e = delta_e

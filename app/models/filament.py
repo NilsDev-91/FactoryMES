@@ -25,8 +25,9 @@ class AmsSlot(SQLModel, table=True):
     printer_id: str = Field(foreign_key="printers.serial")
     ams_index: int # 0-3
     slot_index: int # 0-3
-    tray_color: str # Hex code, e.g. "FF0000FF"
-    tray_type: str # e.g. "PLA"
+    slot_id: int # 0-15 (Flat index for dispatcher)
+    color_hex: str # Hex code, e.g. "FF0000FF"
+    material: str # e.g. "PLA"
     remaining_percent: Optional[int] = None
 
     printer: Optional["Printer"] = Relationship(back_populates="ams_slots")

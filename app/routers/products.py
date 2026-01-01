@@ -189,19 +189,11 @@ async def delete_product(id: int, session: AsyncSession = Depends(get_session)):
 
     raise HTTPException(status_code=404, detail="Product or SKU not found")
 
-@router.patch("/{id}", response_model=Product)
-async def update_product(id: int, product_update: dict, session: AsyncSession = Depends(get_session)):
-    product = await session.get(Product, id)
+@router.patch("/{id}", response_model=ProductReadDTO)
+async def update_product(id: int, product_update: ProductUpdateDTO, session: AsyncSession = Depends(get_session)):
+    product = await ProductService.update_product(id, product_update, session)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    
-    for key, value in product_update.items():
-        if hasattr(product, key):
-            setattr(product, key, value)
-    
-    session.add(product)
-    await session.commit()
-    await session.refresh(product)
     return product
 
 class VariantDefinition(BaseModel):

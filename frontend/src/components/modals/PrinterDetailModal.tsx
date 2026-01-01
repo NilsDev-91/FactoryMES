@@ -42,17 +42,15 @@ export function PrinterDetailModal({ printer, isOpen, onClose }: PrinterDetailMo
     };
 
     // Helper for AMS Slot Visuals
-    const getAmsColor = (slotIdx: number) => {
-        const slot = printer.ams_slots?.find(s => s.ams_index * 4 + s.slot_index === slotIdx); // Assuming simplistic mapping or just checking available slots
-        // Better logic based on backend model:
-        // Backend: ams_index (0-3), slot_index (0-3). 
-        // Frontend Modal legacy code shows 4 slots [0,1,2,3]. Assuming single AMS unit for now.
-        const targetSlot = printer.ams_slots?.find(s => s.slot_index === slotIdx);
+    const formatColor = (color: string | undefined) => {
+        if (!color) return '#334155';
+        let hex = color.replace('#', '');
+        if (hex.length === 8) hex = hex.substring(0, 6);
+        return `#${hex}`;
+    };
 
-        if (!targetSlot?.tray_color) return '#334155';
-        let hex = targetSlot.tray_color;
-        if (!hex.startsWith('#')) hex = '#' + hex;
-        return hex.substring(0, 7);
+    const getAmsSlot = (slotIdx: number) => {
+        return printer.ams_slots?.find(s => s.slot_index === slotIdx) || null;
     };
 
     return (
@@ -137,15 +135,22 @@ export function PrinterDetailModal({ printer, isOpen, onClose }: PrinterDetailMo
                                 <Box size={14} className="text-purple-500" /> AMS Slots
                             </h3>
                             <div className="grid grid-cols-4 gap-3">
-                                {[0, 1, 2, 3].map((slotIdx) => (
-                                    <div key={slotIdx} className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col items-center gap-3">
-                                        <div
-                                            className="w-8 h-8 rounded-full border-2 border-slate-700 shadow-inner"
-                                            style={{ backgroundColor: getAmsColor(slotIdx) }}
-                                        />
-                                        <span className="text-[10px] font-bold text-slate-500">S-{slotIdx + 1}</span>
-                                    </div>
-                                ))}
+                                {[0, 1, 2, 3].map((slotIdx) => {
+                                    const slot = getAmsSlot(slotIdx);
+                                    return (
+                                        <div key={slotIdx} className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col items-center gap-3">
+                                            <div
+                                                className="w-10 h-10 rounded-full border-2 border-slate-700 shadow-inner"
+                                                style={{ backgroundColor: formatColor(slot?.color_hex) }}
+                                                title={slot?.material || 'Empty'}
+                                            />
+                                            <div className="flex flex-col items-center">
+                                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">S-{slotIdx + 1}</span>
+                                                <span className="text-[9px] font-black text-slate-400 mt-0.5">{slot?.material || '---'}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
 

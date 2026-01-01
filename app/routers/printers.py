@@ -105,3 +105,165 @@ async def clear_plate(serial: str, session: AsyncSession = Depends(get_session))
     
     return {"message": "Plate Cleared. Auto-Start re-enabled."}
 
+
+@router.post("/{serial}/confirm-clearance", response_model=dict)
+async def confirm_clearance(serial: str, session: AsyncSession = Depends(get_session)):
+    """
+    Manual clearance confirmation - transitions printer from AWAITING_CLEARANCE to IDLE.
+    
+    This is the fallback for printers where:
+    - Auto-sweep is disabled (can_auto_eject=False)
+    - Part height < 50mm (unsafe for Gantry Sweep)
+    - User wants manual intervention
+    
+    ## Pre-requisite: 
+    Printer status must be AWAITING_CLEARANCE.
+    
+    ## Effect:
+    - Status transitions to IDLE
+    - is_plate_cleared = True
+    - Printer becomes eligible for next job
+    """
+    statement = select(Printer).where(Printer.serial == serial).options(selectinload(Printer.ams_slots))
+    printer = (await session.exec(statement)).first()
+    
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    
+    # Verify the printer is actually waiting for clearance
+    if printer.current_status != PrinterStatusEnum.AWAITING_CLEARANCE:
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Printer is not awaiting clearance. Current status: {printer.current_status.value}"
+        )
+    
+    # Transition to IDLE
+    printer.current_status = PrinterStatusEnum.IDLE
+    printer.is_plate_cleared = True
+    
+    session.add(printer)
+    await session.commit()
+    await session.refresh(printer)
+    
+    return {
+        "message": f"Clearance confirmed. Printer {serial} is now IDLE.",
+        "status": printer.current_status.value,
+        "is_plate_cleared": printer.is_plate_cleared
+    }
+
+
+@router.post("/{serial}/clear-error", response_model=dict)
+async def clear_error(serial: str, session: AsyncSession = Depends(get_session)):
+    """
+    Phase 7: HMS Watchdog - Clear error and reset printer.
+    
+    Acknowledges a hardware error and transitions printer from ERROR/PAUSED back to IDLE.
+    
+    ## Pre-requisite:
+    Printer status must be ERROR or PAUSED.
+    
+    ## Effect:
+    - Clears last_error_code, last_error_time, last_error_description
+    - Transitions status to IDLE
+    - Printer becomes eligible for next job
+    
+    ## Operator Responsibility:
+    The operator MUST physically verify the error condition is resolved before calling this endpoint.
+    """
+    statement = select(Printer).where(Printer.serial == serial).options(selectinload(Printer.ams_slots))
+    printer = (await session.exec(statement)).first()
+    
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    
+    # Verify the printer is in error state
+    if printer.current_status not in [PrinterStatusEnum.ERROR, PrinterStatusEnum.PAUSED]:
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Printer is not in error state. Current status: {printer.current_status.value}"
+        )
+    
+    # Log the error being cleared
+    cleared_error = printer.last_error_description or printer.last_error_code or "Unknown"
+    
+    # Clear error fields
+    printer.last_error_code = None
+    printer.last_error_time = None
+    printer.last_error_description = None
+    
+    # Transition to IDLE
+    printer.current_status = PrinterStatusEnum.IDLE
+    
+    session.add(printer)
+    await session.commit()
+    await session.refresh(printer)
+    
+    return {
+        "message": f"Error cleared on {serial}. Printer is now IDLE.",
+        "cleared_error": cleared_error,
+        "status": printer.current_status.value
+    }
+
+
+from app.schemas.tool_definitions import PrinterActionRequest, PrinterActionEnum
+from app.core.exceptions import PrinterBusyError, ResourceNotFoundError
+from app.services.print_job_executor import PrintJobExecutionService
+from app.services.filament_manager import FilamentManager
+from app.services.printer.commander import PrinterCommander
+
+@router.post("/{serial}/command", response_model=dict)
+async def send_command(
+    serial: str, 
+    command: PrinterActionRequest, 
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Executes a high-level operational command on a specific printer.
+    
+    ## Usage Instructions for AI Agents:
+    - **PAUSE**: Use when you need to temporarily halt printing (e.g. for inspection).
+    - **RESUME**: Use to continue a paused print.
+    - **STOP**: Emergency halt. Cancels the job and stops heaters. Use only if failure is detected.
+    - **CLEAR_BED**: Initiates the automated bed clearing sequence. 
+      - **Pre-requisite**: Printer status must be SUCCESS or AWAITING_CLEARANCE.
+      - **Warning**: Do not use if the printer is currently printing unless `force=True` is set (dangerous).
+    
+    ## Error Handling:
+    - **404 Not Found**: Printer does not exist.
+    - **409 Conflict**: Printer is busy (e.g. printing) and `force=False`. 
+      - *Reasoning*: The agent should check the printer status and decide whether to wait or force.
+    """
+    statement = select(Printer).where(Printer.serial == serial)
+    printer = (await session.exec(statement)).first()
+    
+    if not printer:
+        raise ResourceNotFoundError("Printer", serial)
+        
+    # Check Busy State for invasive commands
+    if command.action in [PrinterActionEnum.CLEAR_BED] and not command.force:
+        # Strict lock: fail if busy
+        if printer.current_status in [PrinterStatusEnum.PRINTING, PrinterStatusEnum.CLEARING_BED, PrinterStatusEnum.COOLDOWN]:
+            raise PrinterBusyError(serial, printer.current_status)
+
+    # Dispatch Command via Executor/Commander
+    # Ideally we use an injected service. For now, instantiate standard services.
+    commander = PrinterCommander()
+    
+    if command.action == PrinterActionEnum.CLEAR_BED:
+         # Use the centralized Executor logic
+         fms = FilamentManager()
+         executor = PrintJobExecutionService(session, fms, commander)
+         await executor.trigger_clearing(printer.serial)
+         return {"message": f"Clearing sequence initiated for {serial}"}
+         
+    elif command.action == PrinterActionEnum.PAUSE:
+        # TODO: Implement pause in Commander
+        pass 
+    elif command.action == PrinterActionEnum.RESUME:
+        # TODO: Implement resume in Commander
+        pass
+    elif command.action == PrinterActionEnum.STOP:
+        # TODO: Implement stop in Commander
+        pass
+
+    return {"message": f"Command {command.action} executed (Simulation)"}

@@ -8,7 +8,7 @@ from app.core.config import settings
 # Create Async Engine using the computed production-ready URL
 engine = create_async_engine(
     settings.ASYNC_DATABASE_URL,
-    echo=False,
+    echo=True,
     future=True
 )
 
