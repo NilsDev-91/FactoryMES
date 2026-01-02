@@ -69,5 +69,19 @@ services:
       - ./frontend/src:/app/src
       - /app/node_modules
 
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    container_name: factory_go2rtc
+    restart: always
+    ports:
+      - "1984:1984" # API & WebRTC
+      - "8554:8554" # RTSP
+    environment:
+      - RTSP_PROTOCOLS=tcp
+    networks:
+      default:
+        aliases:
+          - go2rtc
+
 volumes:
   postgres_data:
