@@ -296,5 +296,11 @@ async def send_command(
     elif command.action == PrinterActionEnum.STOP:
         # TODO: Implement stop in Commander
         pass
+    elif command.action == "CONFIRM_CLEARANCE":
+        # Reactive Loop: Instant handoff
+        fms = FilamentManager()
+        executor = PrintJobExecutionService(session, fms, commander)
+        await executor.handle_manual_clearance(serial)
+        return {"message": f"Manual clearance confirmed for {serial}. Instant handoff triggered."}
 
     return {"message": f"Command {command.action} executed (Simulation)"}
