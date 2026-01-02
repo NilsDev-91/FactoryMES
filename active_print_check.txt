@@ -1,4 +1,0 @@
-Printer Status: PrinterStatusEnum.PRINTING
-Active Job ID: 48
-Active Job Status: JobStatusEnum.PRINTING
-Error: None

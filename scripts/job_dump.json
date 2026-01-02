@@ -1,0 +1,16 @@
+[
+  {
+    "id": 68,
+    "status": "JobStatusEnum.PRINTING",
+    "printer": "03919C461802608",
+    "priority": 0,
+    "gcode": "storage/3mf\\c0e11304-424b-450e-bc9a-473fac4fddd5.3mf"
+  },
+  {
+    "id": 67,
+    "status": "JobStatusEnum.PRINTING",
+    "printer": "03919C461802608",
+    "priority": 0,
+    "gcode": "storage/3mf\\c8754d92-0be0-42e3-8af2-d69325ff5bd7.3mf"
+  }
+]

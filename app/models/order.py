@@ -57,5 +57,6 @@ class JobRead(SQLModel):
     filament_requirements: Optional[Any] = None
     gcode_path: str
     assigned_printer_serial: Optional[str] = None
+    job_metadata: Optional[dict] = {}
 
 # Relationship to Job is handled via string reference

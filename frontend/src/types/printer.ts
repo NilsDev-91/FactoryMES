@@ -7,24 +7,29 @@ export interface AmsSlot {
     remaining_percent?: number;
 }
 
+import { Job } from './job';
+
 export interface Printer {
     serial: string;
     name: string;
     ip_address?: string;
-    type: string; // "P1S", "A1", etc.
-    current_status: string; // "IDLE", "PRINTING", "ERROR", etc.
+    type: string;
+    current_status: string;
     current_progress?: number;
     remaining_time?: number;
     current_temp_nozzle?: number;
     current_temp_bed?: number;
-    ams_inventory?: AmsSlot[]; // Legacy or New? Backend says ams_slots usually. Prompt says ams_inventory.
-    ams_slots?: AmsSlot[]; // Support both for safety during migration
+    ams_inventory?: AmsSlot[];
+    ams_slots?: AmsSlot[];
     is_plate_cleared?: boolean;
     hardware_model?: string;
     can_auto_eject?: boolean;
-    // Phase 7: HMS Watchdog Error Tracking
     last_error_code?: string;
     last_error_time?: string;
     last_error_description?: string;
+    last_job?: Job; // Support for Phase 10 clearance reasons
+    telemetry?: {
+        z_height?: number;
+    };
 }
 

@@ -16,11 +16,10 @@ from app.core.database import async_session_maker
 from app.models.core import Printer, PrinterStatusEnum, ClearingStrategyEnum, JobStatusEnum
 from app.models.filament import AmsSlot
 from app.services.print_job_executor import PrintJobExecutionService
-from app.services.job_service import JobService
-from app.services.filament_manager import FilamentManager
 from app.services.printer.commander import PrinterCommander
 from app.services.production.bed_clearing_service import BedClearingService
 from app.services.logic.hms_parser import HMSParser, hms_parser, ErrorSeverity, ErrorModule
+from app.services.job_dispatcher import job_dispatcher
 
 
 logger = logging.getLogger("PrinterMqttWorker")
@@ -166,18 +165,23 @@ class PrinterMqttWorker:
                     if not printer: return
 
                     # Create Executor
+                    from app.services.filament_manager import FilamentManager
                     fms = FilamentManager() # Lightweight
                     commander = PrinterCommander() # Lightweight
                     executor = PrintJobExecutionService(session, fms, commander)
 
                     if printer.current_status == PrinterStatusEnum.CLEARING_BED:
-                        logger.info(f"FMS: Ejection complete on {serial}. Transitioning to IDLE. Plate is now CLEARED.")
+                        logger.info(f"♻️ Infinite Loop Cycle Complete. Printer {serial} reset to IDLE. Plate is now CLEARED.")
                         printer.current_status = PrinterStatusEnum.IDLE
                         printer.is_plate_cleared = True
                         session.add(printer)
                         await session.commit()
                         updated_cache["is_plate_cleared"] = True
-                        # Do not return, let it flow to queue advance logic
+                        
+                        # Loop Closure: Trigger Dispatcher immediately to reduce idle time
+                        logger.info(f"Loop Closure: Triggering immediate dispatch for {serial}")
+                        asyncio.create_task(job_dispatcher.dispatch_next_job(session))
+                        return # Exit, don't fallback to handle_print_finished
                     
                     # Standard Job Workflow (Delegate to Executor)
                     await executor.handle_print_finished(serial)
@@ -354,15 +358,13 @@ class PrinterMqttWorker:
                     else:
                         printer.current_status = new_mapped_status
                 
-                # --- THERMAL MONITORING (COOLDOWN -> CLEARING_BED) ---
+                # --- THERMAL WATCHDOG (COOLDOWN -> CLEARING_BED) ---
                 if printer.current_status == PrinterStatusEnum.COOLDOWN:
+                    # Physical Principle: Monitor BED temperature for part detachment release
                     current_bed = float(state.get("bed_temper", printer.current_temp_bed))
-                    if current_bed < printer.thermal_release_temp:
-                         logger.info(f"Printer {serial} bed temp ({current_bed}C) reached release threshold ({printer.thermal_release_temp}C). Triggering CLEARING.")
+                    if current_bed <= printer.thermal_release_temp:
+                         logger.info(f"Thermal Release reached ({current_bed}°C). Triggering Bed Clearing for {serial}.")
                          # Trigger Ejection in background to not block sync
-                         # Instantiate executor effectively for this single action? 
-                         # Ideally we should use the same pattern as _handle_message but here we are in _sync_to_db which is async.
-                         # Calling _trigger_ejection which we will refactor to use executor.
                          asyncio.create_task(self._trigger_ejection(serial))
                 
                 if "nozzle_temper" in state:

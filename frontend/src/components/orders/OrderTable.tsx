@@ -2,43 +2,17 @@
 import React from 'react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { RefreshCw, Box, AlertCircle } from 'lucide-react';
+import { RefreshCw, Box, AlertCircle, Broom, Hand } from 'lucide-react';
+import { Job } from '@/types/job';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
 }
 
 // Interfaces matching Backend OrderRead
-export interface FilamentReq {
-    material: string;
-    hex_color: string;
-    virtual_id: number;
-}
+// FilamentReq and Job are now imported from @/types/job
 
-export interface Job {
-    id: number;
-    status: string;
-    filament_requirements: FilamentReq[];
-}
-
-export interface OrderItem {
-    sku: string;
-    quantity: number;
-    title: string;
-    variation_details?: string;
-}
-
-export interface Order {
-    id: number;
-    ebay_order_id: string; // Mapping to platform_order_id concept
-    buyer_username: string;
-    total_price: number;
-    currency: string;
-    status: string; // OPEN, QUEUED, PRINTING, DONE, FAILED
-    created_at: string;
-    items: OrderItem[];
-    jobs: Job[];
-}
+import { Order } from '@/types/order';
 
 interface OrderTableProps {
     orders: Order[];
@@ -136,6 +110,17 @@ export function OrderTable({ orders }: OrderTableProps) {
                                                             job.status === 'PRINTING' ? "bg-green-500 animate-pulse" :
                                                                 job.status === 'FAILED' ? "bg-red-500" : "bg-slate-500"
                                                     )} title={`Job Status: ${job.status}`} />
+
+                                                    {/* Phase 10: Auto-Eject Indicator */}
+                                                    {job.status === 'FINISHED' && (
+                                                        <div className="flex items-center gap-1">
+                                                            {job.job_metadata?.is_auto_eject_enabled ? (
+                                                                <Broom size={12} className="text-emerald-500" title="Automated Bed Sweep" />
+                                                            ) : (
+                                                                <Hand size={12} className="text-amber-500" title="Manual Intervention Required" />
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     {/* Filament Dots */}
                                                     <div className="flex -space-x-1 hover:space-x-1 transition-all">

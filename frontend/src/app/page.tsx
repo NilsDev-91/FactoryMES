@@ -5,8 +5,8 @@ import React from 'react';
 import useSWR from 'swr';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Activity, AlertTriangle, Zap, TrendingUp, ShoppingBag, Loader2 } from 'lucide-react';
-import { Printer } from '@/components/dashboard/PrinterCard'; // Type import
-import { Order } from '@/components/orders/OrderTable'; // Type import
+import { Printer } from '@/types/printer';
+import { Order } from '@/types/order';
 import { SystemStatus } from '@/components/dashboard/system-status';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());

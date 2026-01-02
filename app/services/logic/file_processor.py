@@ -33,6 +33,16 @@ class PlateMetadata(BaseModel):
     class Config:
         extra = "allow"
 
+class SanitizationResult(BaseModel):
+    """
+    Strictly typed result of the sanitization process.
+    Validated on physical hardware (User Reference).
+    """
+    file_path: Path
+    is_auto_eject_enabled: bool  # True ONLY if sweep/fling G-code was appended
+    target_slot: int
+    detected_height: Optional[float]
+
 class FileProcessorService:
     """
     Service to sanitize 3MF files on-the-fly to prevent Filament Mismatch race conditions.
@@ -45,7 +55,7 @@ class FileProcessorService:
         "Metadata/model_settings.config"
     }
 
-    async def sanitize_and_repack(self, source_path: Path, target_index: int, filament_color: str = "#FFFFFF", filament_type: str = "PLA", printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: float = 38.0) -> Path:
+    async def sanitize_and_repack(self, source_path: Path, target_index: int, filament_color: str = "#FFFFFF", filament_type: str = "PLA", printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: float = 38.0) -> SanitizationResult:
         """
         Asynchronously sanitizes the provided 3MF file.
         Injects the target tool index directly into G-code and Metadata.
@@ -58,7 +68,7 @@ class FileProcessorService:
             printer_type (Optional[str]): The hardware model (e.g. "A1", "X1C") for auto-ejection.
             
         Returns:
-            Path: Path to the newly created sanitized .3mf file.
+            SanitizationResult: Detailed result of processing.
             
         Raises:
             FileSanitizationError: If processing fails.
@@ -73,7 +83,7 @@ class FileProcessorService:
             logger.error(f"Failed to sanitize file {source_path}: {e}", exc_info=True)
             raise FileSanitizationError(f"Sanitization failed: {str(e)}") from e
 
-    def _sync_sanitize(self, source_path: Path, target_index: int, filament_color: str, filament_type: str, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm_override: Optional[float] = None) -> Path:
+    def _sync_sanitize(self, source_path: Path, target_index: int, filament_color: str, filament_type: str, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm_override: Optional[float] = None) -> SanitizationResult:
         """
         Synchronous core logic: Excludes bad files, neutralizes metadata, normalizes G-code.
         """
@@ -88,6 +98,7 @@ class FileProcessorService:
         new_gcode_content: Optional[bytes] = None
         active_gcode_filename: Optional[str] = None
         part_height_mm: Optional[float] = None  # Extract from metadata for A1 sweep
+        eject_status = False
         
         try:
             with zipfile.ZipFile(source_path, "r") as source_zip, \
@@ -129,13 +140,18 @@ class FileProcessorService:
                     elif re.match(r"Metadata/plate_.*\.gcode$", file_name):
                         logger.debug(f"Normalizing G-Code in {file_name} -> T{target_index} (Type: {printer_type}, Part Height: {part_height_mm})")
                         original_gcode = source_zip.read(file_name)
-                        new_gcode_content = self._normalize_gcode(
+                        
+                        # Fix: Unpack the tuple from _normalize_gcode
+                        processed_bytes, is_eject_enabled = self._normalize_gcode(
                             original_gcode, 
                             target_index, 
                             printer_type, 
                             is_calibration_due,
                             part_height_mm=part_height_mm
                         )
+                        
+                        eject_status |= is_eject_enabled
+                        new_gcode_content = processed_bytes
                         active_gcode_filename = file_name
                         target_zip.writestr(item, new_gcode_content)
 
@@ -152,7 +168,8 @@ class FileProcessorService:
                              try:
                                 with source_zip.open(expected_gcode_name) as gcode_file:
                                     raw_gcode = gcode_file.read()
-                                    current_gcode_content = self._normalize_gcode(raw_gcode, target_index, printer_type, is_calibration_due)
+                                    # Fix: Unpack tuple here as well if we re-process
+                                    current_gcode_content, _ = self._normalize_gcode(raw_gcode, target_index, printer_type, is_calibration_due)
                              except KeyError:
                                 logger.warning(f"{expected_gcode_name} not found for MD5 calculation.")
                                 current_gcode_content = b""
@@ -192,7 +209,13 @@ class FileProcessorService:
                 pass
             raise e
 
-        return temp_output_path
+        # Return structured result
+        return SanitizationResult(
+            file_path=temp_output_path,
+            is_auto_eject_enabled=eject_status,
+            target_slot=target_index,
+            detected_height=part_height_mm
+        )
 
     def _synchronize_metadata(self, content: bytes, target_index: int, filament_color: str, filament_type: str) -> bytes:
         """
@@ -340,13 +363,9 @@ class FileProcessorService:
             logger.warning(f"Unexpected error extracting part height: {e}")
             return None
 
-    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: Optional[float] = None) -> bytes:
+    def _normalize_gcode(self, content: bytes, target_index: int, printer_type: Optional[str] = None, is_calibration_due: bool = True, part_height_mm: Optional[float] = None) -> Tuple[bytes, bool]:
         """
         Normalizes the G-code to T0 Master protocol and injects Auto-Ejection footer.
-        1. Injects Cache Busting Header (M620 S255, T255).
-        2. Normalizes all tool calls to T0.
-        3. Appends T0 after reset to trigger load.
-        4. Appends Auto-Ejection Footer.
         """
         text = content.decode("utf-8")
         
@@ -390,15 +409,17 @@ class FileProcessorService:
             final_text = "G28 ; Force Home (Fallback)\n" + injection_sequence + sanitized_text
 
         # 4. Inject Auto-Ejection Footer
+        is_eject_enabled = False
         if printer_type:
-             final_text = self._inject_ejection_footer(final_text, printer_type, part_height_mm=part_height_mm)
+             final_text, is_eject_enabled = self._inject_ejection_footer(final_text, printer_type, part_height_mm=part_height_mm)
 
-        return final_text.encode("utf-8")
+        return final_text.encode("utf-8"), is_eject_enabled
 
     def _generate_a1_sweep_gcode(self, part_height_mm: float) -> List[str]:
         """
         Generates the A1 Safe Sweep sequence based on PART HEIGHT from DB.
         Safe Floor: Z=2.0mm. Beam Offset: 33.0mm.
+        Validated on physical hardware (User Reference).
         """
         SAFE_FLOOR = 2.0
         BEAM_OFFSET = 33.0
@@ -433,7 +454,7 @@ class FileProcessorService:
             "; --- END SWEEP ---"
         ]
 
-    def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> str:
+    def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> Tuple[str, bool]:
         """
         Appends hardware-specific ejection sequence to the G-code.
         
@@ -442,6 +463,7 @@ class FileProcessorService:
         """
         p_type = printer_type.upper()
         footer = ""
+        is_enabled = False
 
         if "A1" in p_type:
             # Try the Safe Gantry Sweep for tall parts
@@ -449,7 +471,7 @@ class FileProcessorService:
                 sweep_lines = self._generate_a1_sweep_gcode(part_height_mm)
                 if sweep_lines:
                     logger.info(f"FMS: Using A1 Safe Gantry Sweep for {part_height_mm:.1f}mm part.")
-                    return gcode_text + "\n".join(sweep_lines)
+                    return gcode_text + "\n".join(sweep_lines), True
                 else:
                     logger.info(f"FMS: Part too short for sweep ({part_height_mm:.1f}mm), using standard fling.")
             
@@ -470,6 +492,7 @@ class FileProcessorService:
                 "G1 Y250 F12000\n"
                 "; ------------------------------------------\n"
             )
+            is_enabled = True
         elif any(x in p_type for x in ["X1", "P1"]):
              # X1C / P1P / P1S: Sweep
              footer = (
@@ -485,12 +508,13 @@ class FileProcessorService:
                 "G1 X240 F12000\n"
                 "; ------------------------------------------\n"
              )
+             is_enabled = True
         
         if footer:
             logger.info(f"FMS: Injected {p_type} ejection footer.")
-            return gcode_text + footer
+            return gcode_text + footer, is_enabled
         
-        return gcode_text
+        return gcode_text, False
 
     def _calculate_md5(self, content: bytes) -> str:
         return hashlib.md5(content).hexdigest()

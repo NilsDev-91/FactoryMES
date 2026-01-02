@@ -3,7 +3,8 @@
 
 import React from 'react';
 import useSWR from 'swr';
-import { OrderTable, Order } from '@/components/orders/OrderTable';
+import { OrderTable } from '@/components/orders/OrderTable';
+import { Order } from '@/types/order';
 import { RefreshCw, ShoppingCart } from 'lucide-react';
 
 // Fetcher function for SWR

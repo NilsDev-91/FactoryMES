@@ -12,9 +12,31 @@ router = APIRouter(prefix="/printers", tags=["Printers"])
 
 @router.get("", response_model=List[PrinterRead])
 async def get_printers(session: AsyncSession = Depends(get_session)):
-    statement = select(Printer).options(selectinload(Printer.ams_slots))
+    statement = select(Printer).options(
+        selectinload(Printer.ams_slots),
+        selectinload(Printer.jobs)
+    )
     result = await session.exec(statement)
-    return result.all()
+    printers = result.all()
+
+    # Attach last job for context (e.g. clearance reason)
+    from app.models.core import JobStatusEnum
+    for printer in printers:
+        if printer.jobs:
+            # Sort by updated_at descending to find the last active/finished job
+            sorted_jobs = sorted(
+                [j for j in printer.jobs if j.status in [JobStatusEnum.FINISHED, JobStatusEnum.PRINTING, JobStatusEnum.FAILED]], 
+                key=lambda x: x.updated_at or x.created_at, 
+                reverse=True
+            )
+            if sorted_jobs:
+                printer.last_job = sorted_jobs[0]
+            else:
+                printer.last_job = None
+        else:
+            printer.last_job = None
+            
+    return printers
 
 from app.models.printer import PrinterCreate
 from app.models.core import PrinterStatusEnum

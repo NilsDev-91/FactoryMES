@@ -286,7 +286,11 @@ export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
                             {isAwaitingClearance && (
                                 <div className="flex items-center gap-1.5 text-red-400">
                                     <AlertTriangle size={12} />
-                                    <span>MANUAL CLEARANCE REQUIRED</span>
+                                    <span>
+                                        {printer.last_job?.job_metadata?.is_auto_eject_enabled === false
+                                            ? "MANUAL CLEAR: HEIGHT SAFETY (<38mm)"
+                                            : "MANUAL CLEARANCE REQUIRED"}
+                                    </span>
                                 </div>
                             )}
 

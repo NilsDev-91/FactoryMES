@@ -121,9 +121,8 @@ class PrinterCommander:
         
         try:
             # 1. Sanitize (T0 Master Protocol)
-            # target_slot is 1-based (1-4). ams_index is 0-based (0-3).
-            target_slot = ams_mapping[0]
-            ams_index = max(0, target_slot - 1)
+            # target_index is 0-based for the sanitizer (0-3). ams_mapping[0] is 1-based (1-4).
+            ams_index = max(0, ams_mapping[0] - 1)
 
             # Extract filament requirements for metadata matching
             # Format: [{"material": "...", "hex_color": "..."}]
@@ -137,7 +136,7 @@ class PrinterCommander:
             logger.info(f"Sanitizing file for Job {job.id}: {file_path} -> T{ams_index} (Target Color: {req_color})")
             logger.info(f"Dynamic Calibration: Due={is_calibration_due}")
             
-            sanitized_path = await sanitizer.sanitize_and_repack(
+            result = await sanitizer.sanitize_and_repack(
                 Path(file_path), 
                 target_index=ams_index, 
                 filament_color=req_color,
@@ -146,15 +145,16 @@ class PrinterCommander:
                 is_calibration_due=is_calibration_due,
                 part_height_mm=part_height_mm
             )
+            sanitized_path = result.file_path
             upload_source_path = str(sanitized_path)
             
             # Native Strategy: Identity Mapping
             # We explicitly call T{ams_index} in G-code, so ams_mapping must be 1:1.
             final_mapping = [0, 1, 2, 3]
             
-            logger.info(f"Targeting Physical AMS Index {ams_index} (Slot {target_slot}) via Native G-Code Injection.")
-            logger.info(f"Sanitized {filename} -> Uploading {remote_filename} with Identity Mapping {final_mapping}")
-
+            logger.info(f"Job {job.id} sanitized. Auto-Eject Active: {result.is_auto_eject_enabled} (Height: {result.detected_height}mm)")
+            logger.info(f"Targeting Physical AMS Index {ams_index} (Slot {ams_index + 1}) via Native G-Code Injection.")
+            
             # 2. Upload File (With Retry)
             logger.info(f"Starting upload for Job {job.id} to {printer.serial}...")
             upload_success = False
@@ -193,6 +193,7 @@ class PrinterCommander:
                 raise Exception(f"MQTT Start Failed: {e}") from e
             
             logger.info(f"Job {job.id} started successfully on {printer.serial}")
+            return result
 
         except Exception as e:
             logger.error(f"Failed to start Job {job.id} on {printer.serial}: {e}")
@@ -398,8 +399,8 @@ class PrinterCommander:
                 if ams_mapping:
                     for i, slot_val in enumerate(ams_mapping):
                         if i < 16 and slot_val is not None:
-                            # Subtract 1 to convert 1-4 (DB) to 0-3 (AMS Hardware)
-                            full_ams_mapping[i] = max(0, slot_val - 1)
+                            # ams_mapping values are already 0-indexed hardware IDs (0-15)
+                            full_ams_mapping[i] = slot_val
                 
                 # --- AUTO-DETECT GCODE PATH & MD5 ---
                 gcode_param = "Metadata/plate_1.gcode" 

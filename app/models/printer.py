@@ -1,6 +1,7 @@
 from typing import Optional, List
 from pydantic import BaseModel
 from .core import PrinterStatusEnum, PrinterTypeEnum, ClearingStrategyEnum
+from .order import JobRead
 
 class AmsSlotRead(BaseModel):
     ams_index: int
@@ -32,6 +33,7 @@ class PrinterRead(BaseModel):
     jobs_since_calibration: int
     calibration_interval: int
     ams_slots: List[AmsSlotRead] = []
+    last_job: Optional["JobRead"] = None
 
     class Config:
         from_attributes = True
