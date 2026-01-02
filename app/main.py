@@ -7,9 +7,15 @@ import asyncio
 import os
 import sys
 
-# Windows fixes for MQTT/gmqtt
-if os.name == 'nt':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# Windows fixes for MQTT/aiomqtt - Must be set BEFORE any async code runs
+# Python 3.8+ on Windows uses ProactorEventLoop by default, which is incompatible with aiomqtt
+# This must happen at module load time, before FastAPI creates its event loop
+if sys.platform.startswith("win"):
+    if sys.version_info >= (3, 8):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        # Also explicitly set a new event loop to ensure the policy takes effect
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
 from app.core.config import settings
 from app.core.database import engine, async_session_maker
@@ -17,6 +23,7 @@ from app.models import * # Load all models for metadata discovery
 from app.models.core import SQLModel, Printer
 from app.routers import system, printers, products, orders, ebay, auth, printer_control, fms
 from app.services.printer.mqtt_worker import PrinterMqttWorker
+from app.core.redis import close_redis_connection
 # NEU: Importiere die Dispatcher Klasse
 from app.services.production.dispatcher import ProductionDispatcher 
 from app.services.production.order_processor import order_processor 
@@ -97,6 +104,10 @@ async def lifespan(app: FastAPI):
         for task in app.state.mqtt_tasks.values():
             task.cancel()
         await asyncio.gather(*app.state.mqtt_tasks.values(), return_exceptions=True)
+    
+    # Close Redis Connection
+    await close_redis_connection()
+    logger.info("✅ Redis connection closed.")
 
 app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
