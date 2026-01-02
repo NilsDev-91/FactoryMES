@@ -7,34 +7,43 @@ from app.core.database import get_session
 from app.models.core import Printer
 from app.models.printer import PrinterRead
 from sqlalchemy.orm import selectinload
+import os
+
+from app.services.printer_service import PrinterService
 
 router = APIRouter(prefix="/printers", tags=["Printers"])
 
+# Initialize PrinterService
+printer_service = PrinterService()
+
 @router.get("", response_model=List[PrinterRead])
 async def get_printers(session: AsyncSession = Depends(get_session)):
-    statement = select(Printer).options(
-        selectinload(Printer.ams_slots),
-        selectinload(Printer.jobs)
-    )
-    result = await session.exec(statement)
-    printers = result.all()
+    """Fetch all printers with real-time hot state from Redis."""
+    return await printer_service.get_printers(session)
 
-    # Attach last job for context (e.g. clearance reason)
-    from app.models.core import JobStatusEnum
-    for printer in printers:
-        if printer.jobs:
-            # Sort by updated_at descending to find the last active/finished job
-            sorted_jobs = sorted(
-                [j for j in printer.jobs if j.status in [JobStatusEnum.FINISHED, JobStatusEnum.PRINTING, JobStatusEnum.FAILED]], 
-                key=lambda x: x.updated_at or x.created_at, 
-                reverse=True
-            )
-            if sorted_jobs:
-                printer.last_job = sorted_jobs[0]
-            else:
-                printer.last_job = None
-        else:
-            printer.last_job = None
+@router.get("/{serial}", response_model=PrinterRead)
+async def get_printer(serial: str, session: AsyncSession = Depends(get_session)):
+    """Fetch a single printer with real-time hot state."""
+    printer = await printer_service.get_printer(session, serial)
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    return printer
+
+    # NOTE: last_job temporarily disabled due to Pydantic V2 serialization issues
+    # The forward reference JobRead causes serialization failures
+    # for printer in printers:
+    #     if printer.jobs:
+    #         sorted_jobs = sorted(
+    #             [j for j in printer.jobs if j.status in [JobStatusEnum.FINISHED, JobStatusEnum.PRINTING, JobStatusEnum.FAILED]], 
+    #             key=lambda x: x.updated_at or x.created_at, 
+    #             reverse=True
+    #         )
+    #         if sorted_jobs:
+    #             printer.last_job = sorted_jobs[0]
+    #         else:
+    #             printer.last_job = None
+    #     else:
+    #         printer.last_job = None
             
     return printers
 

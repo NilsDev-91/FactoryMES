@@ -34,12 +34,29 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://factory_user:factory_password@db:5432/factory_db
+      REDIS_URL: redis://redis:6379/0
       POSTGRES_HOST: db
     volumes:
       - ./app:/code/app
       - ./storage:/code/storage
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: factory_redis
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - "6379:6379"
+    restart: always
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   frontend:
     build: ./frontend
