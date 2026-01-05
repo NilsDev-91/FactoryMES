@@ -14,14 +14,6 @@ class PlatformEnum(str, Enum):
     ETSY = "ETSY"
     EBAY = "EBAY"
 
-class OrderStatusEnum(str, Enum):
-    OPEN = "OPEN"
-    QUEUED = "QUEUED"
-    PRINTING = "PRINTING"
-    IN_PROGRESS = "IN_PROGRESS"
-    DONE = "DONE"
-    FAILED = "FAILED"
-
 class PrinterTypeEnum(str, Enum):
     P1S = "P1S"
     A1 = "A1"
@@ -43,7 +35,8 @@ class PrinterStatusEnum(str, Enum):
 
 class ClearingStrategyEnum(str, Enum):
     MANUAL = "MANUAL"
-    A1_INERTIAL_FLING = "A1_INERTIAL_FLING"
+    A1_GANTRY_SWEEP = "A1_GANTRY_SWEEP"       # X-Axis Ram for parts ≥38mm
+    A1_TOOLHEAD_PUSH = "A1_TOOLHEAD_PUSH"     # Nozzle Ram for parts <38mm
     X1_MECHANICAL_SWEEP = "X1_MECHANICAL_SWEEP"
 
 class JobStatusEnum(str, Enum):

@@ -239,14 +239,78 @@ class PrintJobExecutionService:
             if last_job and last_job.job_metadata:
                 model_height = last_job.job_metadata.get("model_height_mm", 50.0)
             
-            maint_3mf_path = self.bed_clearing_service.create_maintenance_3mf(printer, model_height_mm=model_height)
-            await self.printer_commander.start_maintenance_job(printer, maint_3mf_path)
+            from app.services.job_executor import executor as job_executor
+            from app.schemas.job import PartMetadata
             
-            if maint_3mf_path.exists():
-                maint_3mf_path.unlink()
+            logger.info(f"Dispatching MONITORED SWEEP via JobExecutor for {printer_serial}")
+            success = await job_executor.execute_monitored_sweep(
+                printer, 
+                PartMetadata(height_mm=model_height)
+            )
+            
+            if not success:
+                logger.error(f"Monitored sweep failed for {printer_serial}. Falling back to AWAITING_CLEARANCE.")
+                printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
+                self.session.add(printer)
+                await self.session.commit()
                 
         except Exception as e:
             logger.error(f"Failed to trigger clearing for {printer_serial}: {e}")
             printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
             self.session.add(printer)
             await self.session.commit()
+
+    async def handle_manual_clearance(self, printer_id: str) -> Printer:
+        """
+        Operator manually confirms bed empty.
+        Short-circuits the background loop for instant job handoff.
+        """
+        logger.info(f"Operator CONFIRMED CLEARANCE for {printer_id}. Triggering instant handoff.")
+        
+        # 1. Fetch & Validate
+        printer_query = (
+            select(Printer)
+            .where(Printer.serial == printer_id)
+            .options(selectinload(Printer.ams_slots))
+        )
+        printer = (await self.session.execute(printer_query)).scalars().first()
+        
+        if not printer:
+            raise ValueError(f"Printer {printer_id} not found.")
+
+        # Allow clearance from these states
+        allowed_states = [
+            PrinterStatusEnum.AWAITING_CLEARANCE,
+            PrinterStatusEnum.ERROR,
+            PrinterStatusEnum.PAUSED,
+            PrinterStatusEnum.IDLE
+        ]
+        
+        if printer.current_status not in allowed_states:
+            logger.warning(f"Manual clearance attempted on {printer_id} in state {printer.current_status}. Proceeding anyway.")
+
+        # 2. Reset State
+        printer.current_status = PrinterStatusEnum.IDLE
+        printer.is_plate_cleared = True
+        printer.current_job_id = None
+        
+        self.session.add(printer)
+        await self.session.commit()
+        await self.session.refresh(printer)
+
+        # 3. Instant Queue Check (The Short Circuit)
+        next_job = await self.fetch_next_job(printer_id)
+        
+        if next_job:
+            logger.info(f"🚀 Reactive Loop: Instant Handoff! Starting Job {next_job.id} on {printer_id}.")
+            try:
+                await self.execute_print_job(next_job.id, printer_id)
+                # Re-fetch for return
+                await self.session.refresh(printer)
+            except Exception as e:
+                logger.error(f"Instant handoff failed for {printer_id}: {e}")
+                # Printer remains IDLE/Cleared, background loop will retry later
+        else:
+            logger.info(f"Reactive Loop: No compatible jobs for {printer_id} right now.")
+
+        return printer

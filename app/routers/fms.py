@@ -65,3 +65,36 @@ async def get_filament_profiles(session: AsyncSession = Depends(get_session)):
     statement = select(FilamentProfile)
     result = await session.exec(statement)
     return result.all()
+
+class FilamentProfileCreate(BaseModel):
+    brand: str
+    material: str
+    color_hex: str
+    density: float = 1.24 # Default PLA
+    spool_weight: float = 1000.0
+
+@router.post("/profiles", response_model=FilamentProfile)
+async def create_filament_profile(
+    profile_data: FilamentProfileCreate, 
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Creates a new filament profile.
+    Used for auto-generating profiles from AMS data.
+    """
+    # Check for existing profile (Brand + Material + Hex)
+    statement = select(FilamentProfile).where(
+        FilamentProfile.brand == profile_data.brand,
+        FilamentProfile.material == profile_data.material,
+        FilamentProfile.color_hex == profile_data.color_hex
+    )
+    existing = await session.execute(statement)
+    if found := existing.scalar_one_or_none():
+        return found
+        
+    # Create new
+    profile = FilamentProfile(**profile_data.dict())
+    session.add(profile)
+    await session.commit()
+    await session.refresh(profile)
+    return profile

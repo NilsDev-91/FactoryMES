@@ -1,7 +1,16 @@
 from typing import Optional, List, Any
 from datetime import datetime, timezone
+from enum import Enum
 from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, JSON, DateTime
+
+class OrderStatusEnum(str, Enum):
+    OPEN = "OPEN"
+    QUEUED = "QUEUED"
+    PRINTING = "PRINTING"
+    IN_PROGRESS = "IN_PROGRESS"
+    DONE = "DONE"
+    FAILED = "FAILED"
 
 class Order(SQLModel, table=True):
     __tablename__ = "orders"

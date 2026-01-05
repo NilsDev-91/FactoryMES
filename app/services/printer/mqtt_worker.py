@@ -20,6 +20,8 @@ from app.services.printer.commander import PrinterCommander
 from app.services.production.bed_clearing_service import BedClearingService
 from app.services.logic.hms_parser import HMSParser, hms_parser, ErrorSeverity, ErrorModule
 from app.services.job_dispatcher import job_dispatcher
+from app.core.redis import get_redis_client
+from app.schemas.printer_cache import PrinterStateCache, AMSSlotCache
 
 
 logger = logging.getLogger("PrinterMqttWorker")
@@ -206,6 +208,7 @@ class PrinterMqttWorker:
             
         if should_sync:
             await self._sync_to_db(serial, updated_cache)
+            await self._sync_to_redis(serial, updated_cache)  # RESTORE TELEMETRY
             self._last_sync_time[serial] = now
 
         # 3. Auto-Advance Queue Logic
@@ -447,6 +450,63 @@ class PrinterMqttWorker:
                 
         except Exception as e:
             logger.error(f"DB Sync failed for {serial}: {e}")
+
+    async def _sync_to_redis(self, serial: str, state: dict):
+        """
+        Syncs full telemetry to Redis for UI consumption.
+        Matches the Sentinel schema for frontend compatibility.
+        """
+        try:
+            # 1. Map status
+            # Use cached gcode_state if present, otherwise default to OFFLINE
+            status_str = state.get("gcode_state")
+            if not status_str:
+                # Fallback: If we have temps but no state, we are at least IDLE
+                if state.get("nozzle_temper", 0) > 0:
+                    status = PrinterStatusEnum.IDLE
+                else:
+                    status = PrinterStatusEnum.OFFLINE
+            else:
+                status = GCODE_STATE_MAP.get(status_str, PrinterStatusEnum.IDLE)
+            
+            # 2. Extract AMS
+            ams_cache_list = []
+            ams_data = state.get("ams", {}).get("ams", [])
+            for ams_unit in ams_data:
+                ams_id = ams_unit.get("id", "0")
+                trays = ams_unit.get("tray", [])
+                for tray in trays:
+                    tray_id = tray.get("id", "0")
+                    global_slot_id = (int(ams_id) * 4) + int(tray_id)
+                    ams_cache_list.append(AMSSlotCache(
+                        slot_id=global_slot_id,
+                        color=tray.get("tray_color"),
+                        material=tray.get("tray_type")
+                    ))
+
+            # 3. Create Cache Model
+            cache = PrinterStateCache(
+                serial=serial,
+                status=status,
+                temps={
+                    "nozzle": float(state.get("nozzle_temper", 0.0)),
+                    "bed": float(state.get("bed_temper", 0.0))
+                },
+                progress=int(state.get("mc_percent", 0)),
+                remaining_time_min=int(state.get("mc_remaining_time", 0)),
+                active_file=state.get("subtask_name"),
+                ams=ams_cache_list,
+                updated_at=time.time()
+            )
+
+            # 4. Redis Write (60s TTL)
+            redis = get_redis_client()
+            key = f"printer:{serial}:status"
+            await redis.set(key, cache.model_dump_json(), ex=60)
+            logger.debug(f"Telemetry synced to Redis for {serial}")
+
+        except Exception as e:
+            logger.error(f"Redis Sync failed for {serial}: {e}")
 
 
     async def _process_queue_for_printer(self, serial: str):

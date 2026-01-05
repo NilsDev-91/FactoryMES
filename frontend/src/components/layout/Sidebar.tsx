@@ -6,20 +6,20 @@ import { usePathname } from 'next/navigation';
 import {
     LayoutDashboard,
     ShoppingCart,
-    Printer,
     Package,
     Settings,
 } from 'lucide-react';
+import { BambuPrinterIcon } from '@/components/icons/BambuPrinterIcon';
 
 export function Sidebar() {
     const pathname = usePathname();
 
     const navItems = [
         { label: 'Dashboard', href: '/', icon: LayoutDashboard },
-        { label: 'Fleet', href: '/printers', icon: Printer },
+        { label: 'Fleet', href: '/printers', icon: BambuPrinterIcon },
         { label: 'Products', href: '/products', icon: Package },
         { label: 'Live Order Feed', href: '/orders', icon: ShoppingCart },
-        { label: 'Printing Operations', href: '/operations', icon: Printer },
+        { label: 'Printing Operations', href: '/operations', icon: BambuPrinterIcon },
         { label: 'Logistics', href: '/logistics', icon: Package },
         { label: 'Settings', href: '/settings', icon: Settings },
     ];

@@ -5,9 +5,10 @@ from typing import List
 from datetime import datetime
 
 from sqlalchemy.orm import selectinload
+from pydantic import BaseModel
 from app.core.database import get_session
 from app.models.core import Product
-from app.models.order import Order, OrderItem, OrderRead
+from app.models.order import Order, OrderItem, OrderRead, OrderStatusEnum
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -64,3 +65,44 @@ async def create_order(order: Order, session: AsyncSession = Depends(get_session
             raise e
         raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
 
+
+class ManualOrderCreate(BaseModel):
+    sku: str
+    quantity: int = 1
+    buyer_username: str = "ManualEntry"
+
+@router.post("/manual", response_model=OrderRead)
+async def create_manual_order(data: ManualOrderCreate, session: AsyncSession = Depends(get_session)):
+    """
+    Creates a manual order that the OrderProcessor will automatically convert to a Job.
+    """
+    # 1. Create the Order
+    import uuid
+    manual_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
+    
+    db_order = Order(
+        ebay_order_id=manual_id,
+        buyer_username=data.buyer_username,
+        total_price=0.0,
+        currency="EUR",
+        status="PENDING" # Processor watches for PENDING
+    )
+    session.add(db_order)
+    await session.flush()
+    
+    # 2. Add the Item
+    db_item = OrderItem(
+        order_id=db_order.id,
+        sku=data.sku,
+        title=f"Manual Order: {data.sku}",
+        quantity=data.quantity
+    )
+    session.add(db_item)
+    
+    await session.commit()
+    await session.refresh(db_order)
+    
+    # Explicitly load items to avoid LazyLoad error on return
+    stmt = select(Order).where(Order.id == db_order.id).options(selectinload(Order.items))
+    res = await session.execute(stmt)
+    return res.scalars().first()

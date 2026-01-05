@@ -26,7 +26,7 @@ STAGE_TO_STATUS = {
     5: PrinterStatusEnum.PRINTING,
     6: PrinterStatusEnum.PRINTING,
     7: PrinterStatusEnum.PAUSED,
-    8: PrinterStatusEnum.IDLE,
+    8: PrinterStatusEnum.AWAITING_CLEARANCE,
     9: PrinterStatusEnum.PRINTING,
     10: PrinterStatusEnum.PRINTING,
     11: PrinterStatusEnum.PRINTING,
@@ -38,7 +38,7 @@ STAGE_TO_STATUS = {
 GCODE_STATE_TO_STATUS = {
     "IDLE": PrinterStatusEnum.IDLE,
     "RUNNING": PrinterStatusEnum.PRINTING,
-    "FINISH": PrinterStatusEnum.IDLE,
+    "FINISH": PrinterStatusEnum.AWAITING_CLEARANCE,
     "PAUSE": PrinterStatusEnum.PAUSED,
     "OFFLINE": PrinterStatusEnum.OFFLINE,
 }

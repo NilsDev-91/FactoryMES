@@ -13,18 +13,23 @@ const Badge = ({ children, className = "" }: { children: React.ReactNode; classN
     </span>
 );
 
-const ColorCircle = ({ hex }: { hex: string }) => (
-    <div className="group relative">
-        <div
-            className="w-4 h-4 rounded-full border border-white/10 shadow-sm transition-transform hover:scale-125"
-            style={{ backgroundColor: hex }}
-        />
-        {/* Simple Tooltip on Hover */}
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-950 border border-slate-800 text-[10px] text-white rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
-            {hex}
+const ColorCircle = ({ hex }: { hex: string }) => {
+    let cleanHex = hex.replace('#', '');
+    if (cleanHex.length === 8) cleanHex = cleanHex.substring(0, 6);
+    const displayColor = `#${cleanHex}`;
+    return (
+        <div className="group relative">
+            <div
+                className="w-4 h-4 rounded-full border border-white/10 shadow-sm transition-transform hover:scale-125"
+                style={{ backgroundColor: displayColor }}
+            />
+            {/* Simple Tooltip on Hover */}
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-950 border border-slate-800 text-[10px] text-white rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
+                {displayColor}
+            </div>
         </div>
-    </div>
-);
+    );
+};
 
 // --- Column Definitions ---
 

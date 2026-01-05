@@ -2,8 +2,8 @@
 import React from 'react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { RefreshCw, Box, AlertCircle, Broom, Hand } from 'lucide-react';
-import { Job } from '@/types/job';
+import { RefreshCw, Box, AlertCircle, Sparkles, Hand } from 'lucide-react';
+import { Job, FilamentReq } from '@/types/job';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
@@ -54,11 +54,16 @@ export function OrderTable({ orders }: OrderTableProps) {
     const normalizeFilamentRequirements = (reqs: any): FilamentReq[] => {
         if (!reqs) return [];
         const arr = Array.isArray(reqs) ? reqs : [reqs];
-        return arr.map((r, idx) => ({
-            material: r.material || 'PLA',
-            hex_color: r.hex_color || r.color || r.color_hex || '#FFFFFF',
-            virtual_id: r.virtual_id || idx
-        }));
+        return arr.map((r, idx) => {
+            const raw = r.hex_color || r.color || r.color_hex || '#FFFFFF';
+            let hex = raw.replace('#', '');
+            if (hex.length === 8) hex = hex.substring(0, 6);
+            return {
+                material: r.material || 'PLA',
+                hex_color: `#${hex}`,
+                virtual_id: r.virtual_id || idx
+            };
+        });
     };
 
     return (
@@ -115,9 +120,9 @@ export function OrderTable({ orders }: OrderTableProps) {
                                                     {job.status === 'FINISHED' && (
                                                         <div className="flex items-center gap-1">
                                                             {job.job_metadata?.is_auto_eject_enabled ? (
-                                                                <Broom size={12} className="text-emerald-500" title="Automated Bed Sweep" />
+                                                                <span title="Automated Bed Sweep"><Sparkles size={12} className="text-emerald-500" /></span>
                                                             ) : (
-                                                                <Hand size={12} className="text-amber-500" title="Manual Intervention Required" />
+                                                                <span title="Manual Intervention Required"><Hand size={12} className="text-amber-500" /></span>
                                                             )}
                                                         </div>
                                                     )}

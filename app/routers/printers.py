@@ -10,11 +10,14 @@ from sqlalchemy.orm import selectinload
 import os
 
 from app.services.printer_service import PrinterService
+from app.services.stream_service import StreamService
 
 router = APIRouter(prefix="/printers", tags=["Printers"])
 
 # Initialize PrinterService
+# Initialize Services
 printer_service = PrinterService()
+stream_service = StreamService()
 
 @router.get("", response_model=List[PrinterRead])
 async def get_printers(session: AsyncSession = Depends(get_session)):
@@ -28,6 +31,24 @@ async def get_printer(serial: str, session: AsyncSession = Depends(get_session))
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
     return printer
+
+@router.get("/{serial}/stream")
+async def get_printer_stream(serial: str, session: AsyncSession = Depends(get_session)):
+    """
+    Returns the WebRTC stream URL for a printer.
+    Dynamically registers the stream with go2rtc if needed.
+    """
+    statement = select(Printer).where(Printer.serial == serial)
+    printer = (await session.exec(statement)).first()
+    
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+        
+    stream_url = await stream_service.get_stream_url(printer)
+    
+    # In production, this should return the public URL of go2rtc
+    # For now, we return the WebRTC path which the frontend will append to the go2rtc host
+    return {"stream_url": stream_url}
 
     # NOTE: last_job temporarily disabled due to Pydantic V2 serialization issues
     # The forward reference JobRead causes serialization failures
@@ -296,5 +317,11 @@ async def send_command(
     elif command.action == PrinterActionEnum.STOP:
         # TODO: Implement stop in Commander
         pass
+    elif command.action == "CONFIRM_CLEARANCE":
+        # Reactive Loop: Instant handoff
+        fms = FilamentManager()
+        executor = PrintJobExecutionService(session, fms, commander)
+        await executor.handle_manual_clearance(serial)
+        return {"message": f"Manual clearance confirmed for {serial}. Instant handoff triggered."}
 
     return {"message": f"Command {command.action} executed (Simulation)"}

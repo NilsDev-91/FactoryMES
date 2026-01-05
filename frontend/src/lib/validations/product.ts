@@ -8,20 +8,16 @@ export const productFormSchema = z.object({
     name: z.string().min(3, "Product name must be at least 3 characters"),
     sku: z.string().optional(),
     description: z.string().optional(),
-    print_file_id: z.number({ required_error: "Print file is required" }),
-    generate_variants_for_profile_ids: z.array(z.string()).optional().default([]),
+    print_file_id: z.number({ message: "Print file is required" }),
+    generate_variants_for_profile_ids: z.array(z.string()),
 
     // Phase 6: Continuous Printing (Automation Safety)
-    // Accept empty string as initial state to avoid hydration/uncontrolled warnings
-    part_height_mm: z.preprocess(
-        (val) => val === "" ? undefined : val,
-        z.union([z.number().min(38, "Part too short for A1 Auto-Eject (<38mm)."), z.undefined(), z.null(), z.literal('')])
-    ),
-    is_continuous_printing: z.boolean().default(false),
+    part_height_mm: z.number().min(38, "Part too short for A1 Auto-Eject (<38mm).").optional().nullable(),
+    is_continuous_printing: z.boolean().optional(),
 }).superRefine((data, ctx) => {
     // Logic: if continuous printing is ON, we MUST have a valid number height >= 38
     if (data.is_continuous_printing) {
-        const height = typeof data.part_height_mm === 'number' ? data.part_height_mm : 0;
+        const height = data.part_height_mm ?? 0;
         if (!data.part_height_mm || height < 38) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,

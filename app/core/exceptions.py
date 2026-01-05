@@ -44,3 +44,7 @@ class SafetyException(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
+
+class StrategyNotApplicableError(SafetyException):
+    """Raised when a specific ejection strategy cannot be applied to the current part."""
+    pass
