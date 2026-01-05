@@ -10,7 +10,7 @@ import { useRouter } from 'next/navigation';
 
 import { FileUpload } from '@/components/files/file-upload';
 import { ProfileMultiSelect } from '@/components/products/profile-multi-select';
-import { fetchFilamentProfiles } from '@/lib/api/fms';
+import { fetchFilamentProfiles, fetchAvailableMaterials, createFilamentProfile, type MaterialAvailability } from '@/lib/api/fms';
 import { FilamentProfile } from '@/types/api/filament';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -24,6 +24,7 @@ function cn(...inputs: ClassValue[]) {
 export function CreateProductForm() {
     const router = useRouter();
     const [profiles, setProfiles] = useState<FilamentProfile[]>([]);
+    const [availableMaterials, setAvailableMaterials] = useState<MaterialAvailability[]>([]);
     const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
     const [errorMessage, setErrorMessage] = useState('');
     const [uploadedFileName, setUploadedFileName] = useState('');
@@ -34,22 +35,26 @@ export function CreateProductForm() {
             name: '',
             sku: '',
             description: '',
-            print_file_id: undefined,
+            print_file_id: undefined as unknown as number,
             generate_variants_for_profile_ids: [],
-            // Phase 6: Use empty string for number inputs to keep them "controlled" from mount
-            part_height_mm: '',
+            // Phase 6: Continuous Printing safety
+            part_height_mm: undefined,
             is_continuous_printing: false,
         }
     });
 
-    // Load profiles for the multi-select
+    // Load profiles and available materials
     useEffect(() => {
-        fetchFilamentProfiles()
-            .then(setProfiles)
-            .catch(err => {
-                console.error("Failed to load filament profiles:", err);
-                setErrorMessage("Failed to load filament profiles. Please refresh.");
-            });
+        Promise.all([
+            fetchFilamentProfiles(),
+            fetchAvailableMaterials()
+        ]).then(([loadedProfiles, loadedMaterials]) => {
+            setProfiles(loadedProfiles);
+            setAvailableMaterials(loadedMaterials);
+        }).catch(err => {
+            console.error("Failed to load FMS data:", err);
+            setErrorMessage("Failed to load filament data. Please refresh.");
+        });
     }, []);
 
     // Register custom form fields
@@ -58,18 +63,81 @@ export function CreateProductForm() {
         form.register('generate_variants_for_profile_ids');
     }, [form.register]);
 
+    // Computed: Merge Saved Profiles with Live AMS Materials
+    const selectableProfiles = React.useMemo(() => {
+        const virtualProfiles: FilamentProfile[] = [];
+
+        availableMaterials.forEach(amsMat => {
+            // Check if this material/color already exists in saved profiles
+            // We assume "Generic" brand for AMS materials if not perfectly matched
+            const exists = profiles.some(p =>
+                p.material.toLowerCase() === amsMat.material.toLowerCase() &&
+                p.color_hex.toLowerCase() === amsMat.hex_code.toLowerCase()
+            );
+
+            if (!exists) {
+                // Create a Virtual Profile
+                // ID format: temp:{hex}:{material}
+                virtualProfiles.push({
+                    id: `temp:${amsMat.hex_code}:${amsMat.material}`,
+                    brand: "Generic", // Default for auto-discovered
+                    material: amsMat.material,
+                    color_hex: amsMat.hex_code,
+                    density: 1.24, // Default PLA
+                    spool_weight: 1000,
+                });
+            }
+        });
+
+        // Filter duplicates within virtuals (e.g. 2 printers have same new material)
+        const uniqueVirtuals = virtualProfiles.filter((v, i, self) =>
+            i === self.findIndex(t => t.id === v.id)
+        );
+
+        return [...uniqueVirtuals, ...profiles];
+    }, [profiles, availableMaterials]);
+
     const onSubmit = async (data: ProductFormValues) => {
         setStatus('submitting');
         setErrorMessage('');
 
         try {
+            // 1. Resolve Virtual Profiles (Auto-Create)
+            const finalProfileIds: string[] = [];
+
+            for (const id of data.generate_variants_for_profile_ids) {
+                if (id.startsWith('temp:')) {
+                    // It's a virtual profile, create it!
+                    const parts = id.split(':'); // temp, hex, material
+                    const hex = parts[1];
+                    const mat = parts[2];
+
+                    try {
+                        const newProfile = await createFilamentProfile({
+                            brand: "Generic",
+                            material: mat,
+                            color_hex: hex,
+                            density: 1.24,
+                            spool_weight: 1000
+                        });
+                        finalProfileIds.push(newProfile.id);
+                        console.log(`Auto-created profile for ${mat} ${hex}: ${newProfile.id}`);
+                    } catch (e) {
+                        console.error(`Failed to auto-create profile for ${id}`, e);
+                        // Skip or throw? Let's skip to allow partial success
+                    }
+                } else {
+                    finalProfileIds.push(id);
+                }
+            }
+
             // Strict DTO Construction for Backend
             // Ensure payload matches ProductCreate schema
             const payload = {
                 name: data.name,
-                sku: data.sku || undefined, // Send undefined if empty string to let backend auto-generate or handle it
+                sku: data.sku || undefined, // Send undefined if empty string
                 print_file_id: data.print_file_id,
-                generate_variants_for_profile_ids: data.generate_variants_for_profile_ids || [],
+                generate_variants_for_profile_ids: finalProfileIds, // Use resolved IDs
                 // Phase 6: Continuous Printing fields
                 // Normalize empty string back to null for Backend
                 part_height_mm: (typeof data.part_height_mm === 'number') ? data.part_height_mm : null,
@@ -248,7 +316,7 @@ export function CreateProductForm() {
                 </div>
 
                 <ProfileMultiSelect
-                    profiles={profiles}
+                    profiles={selectableProfiles}
                     selectedIds={form.watch('generate_variants_for_profile_ids')}
                     onChange={(ids) => form.setValue('generate_variants_for_profile_ids', ids)}
                 />

@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
                     )
                     app.state.mqtt_tasks[printer.serial] = task
                     logger.info(f"👂 MQTT Listener started for {printer.serial}")
+
     except Exception as e:
         logger.error(f"Lifespan ERROR: Failed to initialize MQTT workers: {e}", exc_info=True)
 
@@ -118,8 +119,10 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://0.0.0.0:3000",
         "http://localhost:5173", # Vite Default
-        "http://127.0.0.1:5173"
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000", # Self-reference
     ],
     allow_credentials=True,
     allow_methods=["*"],

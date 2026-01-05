@@ -454,49 +454,70 @@ class FileProcessorService:
             "; --- END SWEEP ---"
         ]
 
+    def _generate_a1_toolhead_push_gcode(self, part_height_mm: float) -> List[str]:
+        """
+        Generates A1 Toolhead Push (Nozzle Ram) sequence for SMALL parts (<38mm).
+        Uses the toolhead itself to gently push the part off the bed.
+        Safety: Z >= 10mm to prevent nozzle crash.
+        """
+        SAFE_Z = 10.0  # Minimum Z height for toolhead push
+        PUSH_Z = max(SAFE_Z, part_height_mm + 2.0)  # Stay above part
+
+        return [
+            "; --- A1 TOOLHEAD PUSH (FactoryMES) ---",
+            f"; Part Height: {part_height_mm}mm | Push Z: {PUSH_Z:.2f}mm",
+            "M84 S0       ; 1. Lock Motors",
+            "M140 S0      ; 2. Bed Off",
+            "M104 S0      ; 3. Nozzle Off",
+            "M190 R28     ; 4. WAIT for Cool (Passive < 28C)",
+            "G90          ; 5. Absolute Positioning",
+            "G1 Z50 F3000 ; 6. Safety Lift",
+            "G1 X128 Y10 F12000 ; 7. Move to Center-Back",
+            f"G1 Z{PUSH_Z:.2f} F3000 ; 8. Lower to Push Height",
+            "G1 Y256 F2000; 9. PUSH FORWARD (Eject Part)",
+            "G1 Z50 F3000 ; 10. Lift",
+            "G28          ; 11. Re-Home",
+            "M84 S120     ; 12. Restore Idle Timeout",
+            "; --- END TOOLHEAD PUSH ---"
+        ]
+
     def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> Tuple[str, bool]:
         """
         Appends hardware-specific ejection sequence to the G-code.
         
-        For A1 printers with tall parts (> 38mm), uses the Safe Gantry Sweep.
-        Falls back to Y-Axis Fling for shorter parts or when height is unknown.
+        For A1 printers:
+        - Gantry Sweep (X-Axis Ram): Parts >= 38mm
+        - Toolhead Push (Nozzle Ram): Parts < 38mm
         """
         p_type = printer_type.upper()
         footer = ""
         is_enabled = False
 
         if "A1" in p_type:
-            # Try the Safe Gantry Sweep for tall parts
-            if part_height_mm is not None:
-                sweep_lines = self._generate_a1_sweep_gcode(part_height_mm)
-                if sweep_lines:
-                    logger.info(f"FMS: Using A1 Safe Gantry Sweep for {part_height_mm:.1f}mm part.")
-                    return gcode_text + "\n".join(sweep_lines), True
-                else:
-                    logger.info(f"FMS: Part too short for sweep ({part_height_mm:.1f}mm), using standard fling.")
+            MIN_SWEEP_HEIGHT = 38.0
             
-            # Fallback: A1 / A1 Mini: Y-Axis Fling (for short parts or unknown height)
-            footer = (
-                "\n; --- FACTORYOS AUTO-EJECTION (A1 Fling) ---\n"
-                "; NOTE: Part height below sweep threshold or unknown.\n"
-                "; Using inertial ejection instead of gantry sweep.\n"
-                "M104 S0 ; Heat off\n"
-                "M140 S0 ; Bed off\n"
-                "M106 S255 ; Max fan for fast cooling\n"
-                "M109 R28 ; Wait for nozzle < 28C (Safety)\n"
-                "G28 ; Home All\n"
-                "M221 S100 ; Reset flow\n"
-                "; Physical Ejection Moves\n"
-                "G1 Y250 F12000 ; High accel fling\n"
-                "G1 Y10 F12000\n"
-                "G1 Y250 F12000\n"
-                "; ------------------------------------------\n"
-            )
-            is_enabled = True
+            if part_height_mm is not None:
+                if part_height_mm >= MIN_SWEEP_HEIGHT:
+                    # GANTRY SWEEP: X-Axis Ram for tall parts
+                    sweep_lines = self._generate_a1_sweep_gcode(part_height_mm)
+                    if sweep_lines:
+                        logger.info(f"FMS: Selected A1 Gantry Sweep (Height {part_height_mm:.1f}mm >= {MIN_SWEEP_HEIGHT}mm)")
+                        return gcode_text + "\n".join(sweep_lines), True
+                else:
+                    # TOOLHEAD PUSH: Nozzle Ram for small parts
+                    push_lines = self._generate_a1_toolhead_push_gcode(part_height_mm)
+                    logger.info(f"FMS: Selected A1 Toolhead Push (Height {part_height_mm:.1f}mm < {MIN_SWEEP_HEIGHT}mm)")
+                    return gcode_text + "\n".join(push_lines), True
+            else:
+                # Unknown height: Default to Gantry Sweep at safe Z (conservative)
+                logger.warning("FMS: Part height unknown, defaulting to A1 Gantry Sweep at Z=50mm")
+                sweep_lines = self._generate_a1_sweep_gcode(50.0)
+                return gcode_text + "\n".join(sweep_lines), True
+                
         elif any(x in p_type for x in ["X1", "P1"]):
-             # X1C / P1P / P1S: Sweep
+             # X1C / P1P / P1S: Mechanical Sweep
              footer = (
-                "\n; --- FACTORYOS AUTO-EJECTION (Sweep) ---\n"
+                "\n; --- FACTORYOS AUTO-EJECTION (X1/P1 Sweep) ---\n"
                 "M140 S0 ; Bed off\n"
                 "M106 S255 ; Max fan\n"
                 "M109 R28 ; Wait for safe temp\n"

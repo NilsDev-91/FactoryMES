@@ -18,8 +18,29 @@ class PrinterService:
         printer_data = printer_db.model_dump()
         
         if cached_state:
-            # Overwrite with hot telemetry
-            printer_data["status"] = cached_state.status
+            # --- THE INHERITANCE LATCH (DB -> CACHE) ---
+            # If the database says we are in an operational state, do not allow 
+            # real-time telemetry to downgrade us to IDLE.
+            # This solves the "Split Brain" during uploads or while state is transitioning.
+            db_status = printer_db.current_status
+            hot_status = cached_state.status
+            
+            protected_states = [
+                PrinterStatusEnum.PRINTING,
+                PrinterStatusEnum.COOLDOWN,
+                PrinterStatusEnum.CLEARING_BED,
+                PrinterStatusEnum.AWAITING_CLEARANCE,
+                PrinterStatusEnum.ERROR,
+                PrinterStatusEnum.PAUSED
+            ]
+            
+            if db_status in protected_states and hot_status == PrinterStatusEnum.IDLE:
+                # Latch: Keep the high-priority DB status
+                printer_data["status"] = db_status
+            else:
+                printer_data["status"] = hot_status
+
+            # Overwrite other fields with hot telemetry
             printer_data["temps"] = cached_state.temps
             printer_data["nozzle_temp"] = cached_state.temps.get("nozzle", 0.0)
             printer_data["bed_temp"] = cached_state.temps.get("bed", 0.0)
@@ -39,6 +60,9 @@ class PrinterService:
             printer_data["active_file"] = None
             printer_data["is_online"] = False
             printer_data["ams"] = []
+
+        # Fix: Explicitly map ams_slots relation which model_dump() excludes
+        printer_data["ams_slots"] = printer_db.ams_slots
 
         return PrinterRead(**printer_data)
 

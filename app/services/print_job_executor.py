@@ -239,11 +239,20 @@ class PrintJobExecutionService:
             if last_job and last_job.job_metadata:
                 model_height = last_job.job_metadata.get("model_height_mm", 50.0)
             
-            maint_3mf_path = self.bed_clearing_service.create_maintenance_3mf(printer, model_height_mm=model_height)
-            await self.printer_commander.start_maintenance_job(printer, maint_3mf_path)
+            from app.services.job_executor import executor as job_executor
+            from app.schemas.job import PartMetadata
             
-            if maint_3mf_path.exists():
-                maint_3mf_path.unlink()
+            logger.info(f"Dispatching MONITORED SWEEP via JobExecutor for {printer_serial}")
+            success = await job_executor.execute_monitored_sweep(
+                printer, 
+                PartMetadata(height_mm=model_height)
+            )
+            
+            if not success:
+                logger.error(f"Monitored sweep failed for {printer_serial}. Falling back to AWAITING_CLEARANCE.")
+                printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
+                self.session.add(printer)
+                await self.session.commit()
                 
         except Exception as e:
             logger.error(f"Failed to trigger clearing for {printer_serial}: {e}")

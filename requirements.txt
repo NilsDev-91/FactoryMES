@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+sqlmodel
+asyncpg
+redis
+aiomqtt
+pydantic
+pydantic-settings
+python-multipart
+jinja2
+httpx
+websockets
+psycopg2-binary
+alembic
+watchfiles

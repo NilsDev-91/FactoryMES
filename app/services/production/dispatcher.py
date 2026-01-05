@@ -6,8 +6,8 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import async_session_maker
-from app.models.core import Job, Printer, Product, JobStatusEnum, PrinterStatusEnum, OrderStatusEnum
-from app.models.order import Order
+from app.models.core import Job, Printer, Product, JobStatusEnum, PrinterStatusEnum
+from app.models.order import Order, OrderStatusEnum
 from app.models.product_sku import ProductSKU
 from app.models.print_file import PrintFile
 from app.services.job_dispatcher import JobDispatcher

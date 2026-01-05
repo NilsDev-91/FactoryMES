@@ -1,13 +1,15 @@
 import httpx
 import logging
 import urllib.parse
+import os
 from app.models.core import Printer
 
 logger = logging.getLogger("StreamService")
 
 class StreamService:
-    def __init__(self, go2rtc_url: str = "http://go2rtc:1984"):
-        self.go2rtc_url = go2rtc_url
+    def __init__(self, go2rtc_url: str = None):
+        # Default to localhost for local dev, use env var for Docker
+        self.go2rtc_url = go2rtc_url or os.getenv("GO2RTC_URL", "http://localhost:1984")
 
     async def get_stream_url(self, printer: Printer) -> str:
         """
@@ -38,6 +40,7 @@ class StreamService:
             # we still return the URL as it might work if already registered
             pass
 
-        # 3. Return WebRTC URL
-        # go2rtc WebRTC endpoint for browsers
-        return f"/api/webrtc?src={printer.serial}"
+        # 3. Return Stream URL (Browser Access)
+        # Using stream.html with mode=mse for better compatibility
+        # mse = Media Source Extensions, works in most modern browsers
+        return f"http://localhost:1984/stream.html?src={printer.serial}&mode=mse"

@@ -29,17 +29,18 @@ class OrderProcessor:
         logger.info("OrderProcessor loop started.")
         while self.running:
             try:
-                await self.sync_orders()
+                # 1. Fetch from eBay
+                await self.sync_ebay_orders()
+                # 2. Sync from local DB (Manual/Simplified simulations)
+                await self.sync_local_orders()
             except Exception as e:
                 logger.error(f"Error in OrderProcessor loop: {e}", exc_info=True)
             
-            await asyncio.sleep(60) # Run every 60 seconds
+            await asyncio.sleep(15) # Shorter loop for responsiveness
 
-    async def sync_orders(self):
-        """Fetches new orders and processes them."""
-        logger.info("Syncing eBay orders...")
-        
-        # 1. Fetch from eBay
+    async def sync_ebay_orders(self):
+        """Fetches new orders from eBay API."""
+        logger.debug("Syncing eBay orders via API...")
         try:
             new_orders = await ebay_orders.fetch_orders()
         except Exception as e:
@@ -47,31 +48,48 @@ class OrderProcessor:
             return
 
         if not new_orders:
-            logger.info("No new orders found.")
             return
 
         async for session in get_session():
             for ebay_order in new_orders:
-                # 2. Check deduplication
+                # Deduplication
                 stmt = select(Order).where(Order.ebay_order_id == ebay_order.order_id)
                 result = await session.exec(stmt)
-                existing_order = result.first()
-                
-                if existing_order:
-                    logger.debug(f"Order {ebay_order.order_id} already exists. Skipping.")
+                if result.first():
                     continue
                 
-                # 3. Process new order
                 try:
-                    await self.process_order(session, ebay_order)
+                    await self.process_ebay_order(session, ebay_order)
                 except Exception as e:
-                    logger.error(f"Failed to process order {ebay_order.order_id}: {e}", exc_info=True)
+                    logger.error(f"Failed to process eBay order {ebay_order.order_id}: {e}", exc_info=True)
 
-    async def process_order(self, session: AsyncSession, ebay_order: EbayOrder):
-        """Converts a single eBay order into an internal Order and Jobs."""
-        logger.info(f"Processing new order: {ebay_order.order_id}")
+    async def sync_local_orders(self):
+        """Processes PENDING orders in the DB that have no Jobs yet."""
+        async for session in get_session():
+            # Find Orders with status PENDING
+            # We filter for those without jobs in convert_order_to_jobs to be safe
+            stmt = (
+                select(Order)
+                .where(Order.status == "PENDING")
+                .options(selectinload(Order.items), selectinload(Order.jobs))
+            )
+            result = await session.exec(stmt)
+            orders = result.all()
+            
+            for order in orders:
+                if not order.jobs:
+                    logger.info(f"Auto-processing internal Order {order.ebay_order_id}")
+                    try:
+                        await self.convert_order_to_jobs(session, order)
+                        await session.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to auto-process Order {order.id}: {e}")
+                        await session.rollback()
+
+    async def process_ebay_order(self, session: AsyncSession, ebay_order: EbayOrder):
+        """Converts an EbayOrder object to a DB Order and then to Jobs."""
+        logger.info(f"Ingesting eBay order: {ebay_order.order_id}")
         
-        # Create Order
         db_order = Order(
             ebay_order_id=ebay_order.order_id,
             buyer_username=ebay_order.buyer.username,
@@ -81,11 +99,9 @@ class OrderProcessor:
             created_at=ebay_order.creation_date
         )
         session.add(db_order)
-        await session.flush() # Get ID
+        await session.flush()
         
-        # Process Line Items
         for item in ebay_order.line_items:
-            # Create OrderItem
             db_item = OrderItem(
                 order_id=db_order.id,
                 sku=item.sku or "UNKNOWN",
@@ -94,10 +110,28 @@ class OrderProcessor:
                 variation_details=str(item.variation_aspects) if item.variation_aspects else None
             )
             session.add(db_item)
-            
-            # Match Product/SKU & Create Job
+        
+        await session.commit()
+        await session.refresh(db_order, ["items", "jobs"]) # Ensure relations are ready
+        
+        # Now convert to jobs
+        await self.convert_order_to_jobs(session, db_order)
+        await session.commit()
+
+    async def convert_order_to_jobs(self, session: AsyncSession, order: Order):
+        """The core 'Brain' that maps OrderItems to G-code and creates Jobs."""
+        logger.info(f"Converting Order {order.id} to Jobs...")
+        
+        # Ensure items are loaded
+        if not order.items:
+            # Re-fetch with items if needed
+            stmt = select(Order).where(Order.id == order.id).options(selectinload(Order.items))
+            order = (await session.exec(stmt)).first()
+
+        for item in order.items:
+            # Match Product/SKU
             if item.sku:
-                # 1. Try matching with ProductSKU (Master-Variant Architecture)
+                # 1. Master-Variant Lookup
                 sku_stmt = (
                     select(ProductSKU)
                     .where(ProductSKU.sku == item.sku)
@@ -106,23 +140,17 @@ class OrderProcessor:
                         selectinload(ProductSKU.product).selectinload(Product.print_file)
                     )
                 )
-                sku_result = await session.exec(sku_stmt)
-                sku_record = sku_result.first()
+                sku_record = (await session.exec(sku_stmt)).first()
                 
                 if sku_record:
-                    logger.info(f"Found matching ProductSKU for SKU {item.sku}.")
-                    
-                    # Resolve File Path
+                    # Resolve File
                     file_path = None
                     if sku_record.print_file:
                         file_path = sku_record.print_file.file_path
                     elif sku_record.product and sku_record.product.print_file_id:
-                        # Fallback to parent product's print file
-                        # We need to load it if not available, but for now let's hope it's loaded 
-                        # Or just use product.file_path_3mf as ultimate fallback
                         file_path = sku_record.product.file_path_3mf
                     
-                    # Resolve Requirements
+                    # Resolve Req
                     reqs = [{
                         "material": sku_record.product.required_filament_type if sku_record.product else "PLA",
                         "color": sku_record.hex_color or (sku_record.product.required_filament_color if sku_record.product else None)
@@ -130,45 +158,43 @@ class OrderProcessor:
                     
                     for _ in range(item.quantity):
                         job = Job(
-                            order_id=db_order.id,
+                            order_id=order.id,
                             gcode_path=file_path or "MISSING_FILE",
                             status=JobStatusEnum.PENDING,
-                            filament_requirements=reqs
+                            filament_requirements=reqs,
+                            job_metadata={
+                                "part_height_mm": sku_record.product.part_height_mm if sku_record.product else 0,
+                                "is_continuous": sku_record.product.is_continuous_printing if sku_record.product else False
+                            }
                         )
                         session.add(job)
                 else:
-                    # 2. Fallback to legacy Product lookup
+                    # 2. Legacy Product Fallback
                     stmt = select(Product).where(Product.sku == item.sku)
-                    result = await session.exec(stmt)
-                    product = result.first()
+                    product = (await session.exec(stmt)).first()
                     
                     if product:
-                        logger.info(f"Found matching legacy Product for SKU {item.sku}. Creating {item.quantity} Job(s).")
-                        
-                        # Create one job per quantity
                         for _ in range(item.quantity):
-                            # Determine requirements
                             reqs = [{
                                 "material": product.required_filament_type,
                                 "color": product.required_filament_color
                             }]
-                            
-                            # Basic variation parsing
-                            if item.variation_aspects:
-                                for aspect in item.variation_aspects:
-                                    if aspect.name.lower() in ["color", "colour"]:
-                                        reqs[0]["color"] = aspect.value
-                                        break
+                            # Simple variation parsing if it was manual
+                            # (variation_details is a string representation of list of aspects)
                             
                             job = Job(
-                                order_id=db_order.id,
-                                gcode_path=product.file_path_3mf, # Using 3mf path as source
+                                order_id=order.id,
+                                gcode_path=product.file_path_3mf,
                                 status=JobStatusEnum.PENDING,
-                                filament_requirements=reqs
+                                filament_requirements=reqs,
+                                job_metadata={
+                                    "part_height_mm": product.part_height_mm,
+                                    "is_continuous": product.is_continuous_printing
+                                }
                             )
                             session.add(job)
                     else:
-                        logger.warning(f"No Product or SKU found for SKU {item.sku}. No Job created.")
+                        logger.warning(f"No Product/SKU found for {item.sku}. Skipping.")
             
         await session.commit()
         logger.info(f"Order {ebay_order.order_id} processed successfully.")

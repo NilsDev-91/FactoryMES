@@ -24,3 +24,22 @@ export async function fetchFilamentProfiles(): Promise<FilamentProfile[]> {
     }
     return res.json();
 }
+
+export async function createFilamentProfile(data: {
+    brand: string;
+    material: string;
+    color_hex: string;
+    density?: number;
+    spool_weight?: number;
+}): Promise<FilamentProfile> {
+    const res = await fetch(`${API_BASE}/fms/profiles`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+        throw new Error('Failed to create filament profile');
+    }
+    return res.json();
+}
+

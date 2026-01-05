@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel
 from .core import PrinterStatusEnum, PrinterTypeEnum, ClearingStrategyEnum
 from .order import JobRead

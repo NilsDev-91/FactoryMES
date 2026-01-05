@@ -137,7 +137,7 @@ export function ProfileMultiSelect({
                                         <div className="flex items-center gap-3">
                                             <div
                                                 className="w-4 h-4 rounded-full border border-white/10 shadow-sm"
-                                                style={{ backgroundColor: profile.color_hex }}
+                                                style={{ backgroundColor: profile.color_hex.startsWith('#') ? profile.color_hex : `#${profile.color_hex}` }}
                                             />
                                             <div className="flex flex-col">
                                                 <span className="text-sm font-medium">{profile.brand} {profile.material}</span>

@@ -24,6 +24,8 @@ export interface Printer {
     is_plate_cleared?: boolean;
     hardware_model?: string;
     can_auto_eject?: boolean;
+    thermal_release_temp?: number;
+    clearing_strategy?: string;
     last_error_code?: string;
     last_error_time?: string;
     last_error_description?: string;

@@ -156,7 +156,11 @@ class PrinterCommander:
             logger.info(f"Targeting Physical AMS Index {ams_index} (Slot {ams_index + 1}) via Native G-Code Injection.")
             
             # 2. Upload File (With Retry)
-            logger.info(f"Starting upload for Job {job.id} to {printer.serial}...")
+            if not os.path.exists(upload_source_path):
+                logger.error(f"Sanitized file missing before upload: {upload_source_path}")
+                raise FileNotFoundError(f"Sanitized file deleted unexpectedly: {upload_source_path}")
+
+            logger.info(f"Starting upload for Job {job.id} to {printer.serial} (File: {upload_source_path})...")
             upload_success = False
             last_error = None
             for attempt in range(1, 4):
@@ -261,6 +265,10 @@ class PrinterCommander:
         # -----------------------
 
         logger.info(f"Uploading {local_path} to {ip} as {target_filename}...")
+        
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Source file for upload missing: {local_path}")
+            
         debug_log(f"START UPLOAD (ftplib): {ip}, {target_filename}")
 
         def _sync_upload():

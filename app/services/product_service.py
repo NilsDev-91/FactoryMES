@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from typing import List, Optional, Set
 from datetime import datetime, timezone
@@ -48,6 +49,9 @@ class ProductReadDTO(BaseModel):
     print_file_id: Optional[int] = None
     print_file: Optional[PrintFileSummaryDTO] = None
     variants: List[ProductSKUReadDTO] = []
+    # Phase 6: Continuous Printing (Automation Safety)
+    part_height_mm: Optional[float] = None
+    is_continuous_printing: bool = False
     created_at: datetime
 
 class VariantDefinitionDTO(BaseModel):
@@ -59,6 +63,8 @@ class ProductCreateDTO(BaseModel):
     sku: str
     description: Optional[str] = None
     print_file_id: Optional[int] = None
+    part_height_mm: Optional[float] = None
+    is_continuous_printing: bool = False
     generate_variants_for_profile_ids: Optional[List[uuid.UUID]] = None
 
 class ProductUpdateDTO(BaseModel):
@@ -67,6 +73,9 @@ class ProductUpdateDTO(BaseModel):
     description: Optional[str] = None
     print_file_id: Optional[int] = None
     is_catalog_visible: Optional[bool] = None
+    part_height_mm: Optional[float] = None
+    is_continuous_printing: Optional[bool] = None
+    generate_variants_for_profile_ids: Optional[List[uuid.UUID]] = None
 
 # --- Service Implementation ---
 
@@ -96,6 +105,8 @@ class ProductService:
             sku=dto.sku,
             description=dto.description,
             print_file_id=dto.print_file_id,
+            part_height_mm=dto.part_height_mm,
+            is_continuous_printing=dto.is_continuous_printing,
             is_catalog_visible=True
         )
         session.add(master_product)
@@ -227,17 +238,93 @@ class ProductService:
             product.print_file_id = dto.print_file_id
         if dto.is_catalog_visible is not None:
             product.is_catalog_visible = dto.is_catalog_visible
+        if dto.part_height_mm is not None:
+            product.part_height_mm = dto.part_height_mm
+        if dto.is_continuous_printing is not None:
+            product.is_continuous_printing = dto.is_continuous_printing
 
         # Sync to Master SKU (the one directly owned by this product, no parent)
         # This keeps the catalog view in sync with the master product data
+        master_sku = None
         for variant in product.variants:
             if variant.parent_id is None: # This is the master
+                master_sku = variant
                 if dto.name is not None:
                     variant.name = dto.name
                 if dto.sku is not None:
                     variant.sku = dto.sku
                 if dto.print_file_id is not None:
                     variant.print_file_id = dto.print_file_id
+        
+        # --- Variant Synchronization Logic ---
+        if dto.generate_variants_for_profile_ids is not None:
+            if not master_sku:
+                # Should typically not happen if data integrity is good, but let's be safe
+                logger.error(f"Product {product.id} missing Master SKU during update.")
+            else:
+                # 1. Map current profile IDs
+                # Identify Child SKUs (those that have a parent_id == master_sku.id)
+                current_profile_map = {} # profile_id -> ProductSKU
+                for variant in product.variants:
+                    if variant.parent_id == master_sku.id:
+                        # Assuming each variant has ONE requirement which is the profile
+                        # If complex logic changes later, this needs adaptation
+                        if variant.requirements:
+                            prof_id = variant.requirements[0].filament_profile_id
+                            current_profile_map[prof_id] = variant
+                
+                target_ids = set(dto.generate_variants_for_profile_ids)
+                current_ids = set(current_profile_map.keys())
+                
+                # Determine Diff
+                to_add = target_ids - current_ids
+                to_remove = current_ids - target_ids
+                
+                # A. Remove Unselected Variants
+                for pid in to_remove:
+                    variant_to_delete = current_profile_map[pid]
+                    logger.info(f"Removing variant SKU {variant_to_delete.sku} for Profile {pid}")
+                    await session.delete(variant_to_delete)
+                
+                # B. Add New Variants
+                for pid in to_add:
+                    profile = await session.get(FilamentProfile, pid)
+                    if not profile:
+                        continue
+                        
+                    safe_name = product.name.replace(" ", "_").upper()
+                    safe_mat = profile.material.replace(" ", "_").upper()
+                    safe_color = profile.color_hex.replace("#", "").upper()
+                    
+                    variant_sku_str = f"{product.sku}-{safe_mat}-{safe_color}"
+                    
+                    # Check for existence (idempotency)
+                    existing_sku_q = await session.execute(select(ProductSKU).where(ProductSKU.sku == variant_sku_str))
+                    if existing_sku_q.scalar_one_or_none():
+                         # If it exists but wasn't linked to this profile properly, we might just skip
+                         # or it could be a collision with another product. Safe to skip or log.
+                         logger.warning(f"SKU Collision on update: {variant_sku_str}")
+                         continue
+
+                    # Create Child SKU
+                    child_sku = ProductSKU(
+                        sku=variant_sku_str,
+                        name=f"{product.name} - {profile.material} ({profile.color_hex})",
+                        is_catalog_visible=False,
+                        parent_id=master_sku.id,
+                        product_id=product.id,
+                        print_file_id=product.print_file_id, 
+                        hex_color=profile.color_hex
+                    )
+                    session.add(child_sku)
+                    await session.flush()
+
+                    # Create Requirement
+                    req = ProductRequirement(
+                        product_sku_id=child_sku.id,
+                        filament_profile_id=profile.id
+                    )
+                    session.add(req)
 
         actual_id = product.id
         session.add(product)

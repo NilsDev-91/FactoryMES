@@ -1,15 +1,38 @@
-
 import React, { useState } from 'react';
-import { Settings, Clock, Trash2, AlertTriangle, Loader2, Snowflake, ArrowRightLeft, CheckCircle2 } from 'lucide-react';
-import { mutate } from 'swr';
+import { Settings, Clock, Trash2, AlertTriangle, Loader2, Snowflake, ArrowRightLeft, CheckCircle2, MoreVertical, Camera } from 'lucide-react';
+import { PrinterCameraDialog } from '../printer/PrinterCameraDialog';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { useQueryClient } from '@tanstack/react-query';
+import { usePrinterAction } from '@/hooks/use-printer-action';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Printer } from '../../types/printer';
-import { PrinterControls } from '../printers/printer-controls';
 
+/**
+ * Utility function to merge tailwind classes
+ */
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES & HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+type PrinterStatus =
+    | 'idle' | 'printing' | 'done' | 'offline'
+    | 'awaiting_clearance' | 'cooldown' | 'clearing_bed'
+    | 'error' | 'paused';
+
+/**
+ * Normalizes hex colors and handles transparency
+ */
+const formatColor = (color: string | undefined) => {
+    if (!color) return undefined;
+    let hex = color.replace('#', '');
+    if (hex.length === 8) hex = hex.substring(0, 6);
+    return `#${hex}`;
+};
 
 export interface PrinterCardProps {
     printer: Printer;
@@ -17,366 +40,282 @@ export interface PrinterCardProps {
 }
 
 /**
- * High-Density PrinterCard
- * Design: Dark Mode / Industrial / High Scalability (500+ units)
+ * Professional PrinterCard - Integrated Dashboard Aesthetic
+ * 
+ * Hierarchy:
+ * 1. [Header] Identity & Connectivity
+ * 2. [Body] Filament Tray (Subtle Dashboard Widgets)
+ * 3. [Footer] Progress Terminal / Action Interface
  */
 export function PrinterCard({ printer, onSettingsClick }: PrinterCardProps) {
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
-    const [isClearing, setIsClearing] = useState(false);
+    const [showDropdown, setShowDropdown] = useState(false);
+    const [isCameraOpen, setIsCameraOpen] = useState(false);
+
+    const queryClient = useQueryClient();
+    const { mutate: runAction, isPending: isActionPending } = usePrinterAction(printer.serial);
+
+    const status = (printer.status || 'idle').toLowerCase() as PrinterStatus;
+    const isPrinting = status === 'printing';
+    const isAwaitingClearance = status === 'awaiting_clearance';
+    const isCooldown = status === 'cooldown';
+    const isClearingBed = status === 'clearing_bed';
+    const isError = status === 'error';
+    const isPaused = status === 'paused';
+
+    const isActionRequired = isAwaitingClearance || isError || isPaused;
+    const progress = isAwaitingClearance ? 100 : (printer.progress || 0);
+
+    const formatTime = (minutes: number | undefined): string | null => {
+        if (!minutes || minutes <= 0) return null;
+        if (minutes >= 60) {
+            const h = Math.floor(minutes / 60);
+            const m = minutes % 60;
+            return `${h}h${m > 0 ? ` ${m}m` : ''}`;
+        }
+        return `${minutes}m`;
+    };
+    const timeLeft = formatTime(printer.remaining_time_min);
+
+    const statusConfig: Record<PrinterStatus, { border: string; text: string; bg: string; progress: string }> = {
+        idle: { border: 'border-purple-500', text: 'text-purple-500', bg: 'bg-purple-500/20', progress: 'bg-purple-500' },
+        printing: { border: 'border-yellow-500', text: 'text-yellow-500', bg: 'bg-yellow-500/20', progress: 'bg-yellow-500' },
+        done: { border: 'border-green-500', text: 'text-green-500', bg: 'bg-green-500/20', progress: 'bg-green-500' },
+        offline: { border: 'border-slate-700', text: 'text-slate-500', bg: 'bg-slate-800', progress: 'bg-slate-700' },
+        awaiting_clearance: { border: 'border-emerald-500', text: 'text-emerald-400', bg: 'bg-emerald-500/10', progress: 'bg-emerald-500' },
+        cooldown: { border: 'border-blue-500', text: 'text-blue-400', bg: 'bg-blue-500/20', progress: 'bg-blue-500' },
+        clearing_bed: { border: 'border-amber-500', text: 'text-amber-400', bg: 'bg-amber-500/20', progress: 'bg-amber-500' },
+        error: { border: 'border-red-600', text: 'text-red-500', bg: 'bg-red-500/20', progress: 'bg-red-600' },
+        paused: { border: 'border-orange-500', text: 'text-orange-400', bg: 'bg-orange-500/20', progress: 'bg-orange-500' }
+    };
+
+    const config = statusConfig[status] || statusConfig.idle;
 
     const handleDelete = async (e: React.MouseEvent) => {
         e.stopPropagation();
         setIsDeleting(true);
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}`, {
-                method: 'DELETE'
-            });
+            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}`, { method: 'DELETE' });
             if (!res.ok) throw new Error('Failed to delete');
-            mutate('http://127.0.0.1:8000/api/printers');
+            queryClient.invalidateQueries({ queryKey: ['printers'] });
         } catch (error) {
             alert('Failed to delete printer');
             setIsDeleting(false);
         }
     };
 
-    const handleClearance = async (e: React.MouseEvent) => {
+    const handleClearance = (e: React.MouseEvent) => {
         e.stopPropagation();
-        setIsClearing(true);
-        try {
-            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}/confirm-clearance`, {
-                method: 'POST'
-            });
-            if (!res.ok) throw new Error('Failed to confirm clearance');
-            mutate('http://127.0.0.1:8000/api/printers');
-        } catch (error) {
-            alert('Failed to confirm clearance');
-        } finally {
-            setIsClearing(false);
-        }
+        runAction('CONFIRM_CLEARANCE');
     };
 
-    // Phase 7: Clear error handler
-    const handleClearError = async (e: React.MouseEvent) => {
+    const handleClearError = (e: React.MouseEvent) => {
         e.stopPropagation();
-        setIsClearing(true);
-        try {
-            const res = await fetch(`http://127.0.0.1:8000/api/printers/${printer.serial}/clear-error`, {
-                method: 'POST'
-            });
-            if (!res.ok) throw new Error('Failed to clear error');
-            mutate('http://127.0.0.1:8000/api/printers');
-        } catch (error) {
-            alert('Failed to clear error');
-        } finally {
-            setIsClearing(false);
-        }
+        runAction('CLEAR_ERROR');
     };
 
-    // Standardize status
-    const status = (printer.current_status || 'idle').toLowerCase();
-    const isPrinting = status === 'printing';
-    const isAwaitingClearance = status === 'awaiting_clearance';
-    const isCooldown = status === 'cooldown';
-    const isClearingBed = status === 'clearing_bed';
-    // Phase 7: HMS Watchdog States
-    const isError = status === 'error';
-    const isPaused = status === 'paused';
-
-    // Progress logic: Printing uses actual, Automation states show indeterminate
-    const progress = isAwaitingClearance ? 100 : (printer.current_progress || 0);
-    const showProgressBar = isPrinting || isAwaitingClearance || isCooldown || isClearingBed;
-
-    const timeLeft = printer.remaining_time ? `${printer.remaining_time}m` : null;
-
-    // Strict color mapping per requirements
-    const statusConfig: Record<string, { border: string; text: string; bg: string; progress: string }> = {
-        idle: {
-            border: 'border-purple-500',
-            text: 'text-purple-500',
-            bg: 'bg-purple-500/20',
-            progress: 'bg-purple-500',
-        },
-        printing: {
-            border: 'border-yellow-500',
-            text: 'text-yellow-500',
-            bg: 'bg-yellow-500/20',
-            progress: 'bg-yellow-500',
-        },
-        done: {
-            border: 'border-green-500',
-            text: 'text-green-500',
-            bg: 'bg-green-500/20',
-            progress: 'bg-green-500',
-        },
-        error: {
-            border: 'border-red-500',
-            text: 'text-red-500',
-            bg: 'bg-red-500/20',
-            progress: 'bg-red-500',
-        },
-        offline: {
-            border: 'border-slate-700',
-            text: 'text-slate-500',
-            bg: 'bg-slate-800',
-            progress: 'bg-slate-700',
-        },
-        awaiting_clearance: {
-            border: 'border-red-500',
-            text: 'text-red-400',
-            bg: 'bg-red-500/10',
-            progress: 'bg-red-500',
-        },
-        // Phase 6: New Automation States
-        cooldown: {
-            border: 'border-blue-500',
-            text: 'text-blue-400',
-            bg: 'bg-blue-500/20',
-            progress: 'bg-blue-500',
-        },
-        clearing_bed: {
-            border: 'border-amber-500',
-            text: 'text-amber-400',
-            bg: 'bg-amber-500/20',
-            progress: 'bg-amber-500',
-        },
-        // Phase 7: HMS Watchdog Error States
-        error: {
-            border: 'border-red-600',
-            text: 'text-red-500',
-            bg: 'bg-red-500/20',
-            progress: 'bg-red-600',
-        },
-        paused: {
-            border: 'border-orange-500',
-            text: 'text-orange-400',
-            bg: 'bg-orange-500/20',
-            progress: 'bg-orange-500',
-        }
-    };
-
-    const config = statusConfig[status] || statusConfig.idle;
-
-    // Clean Alpha from Hex if present (e.g. FF0000FF -> #FF0000)
-    const formatColor = (color: string | undefined) => {
-        if (!color) return '#334155'; // Fallback
-        let hex = color.replace('#', '');
-        if (hex.length === 8) hex = hex.substring(0, 6);
-        return `#${hex}`;
-    };
-
-    // Prepare AMS Slots (Guarantee 4 slots for visualization)
     const slots = printer.ams_slots || [];
     const amsDisplay = [0, 1, 2, 3].map(idx => {
         return slots.find(s => s.slot_index === idx) || { color_hex: undefined, material: 'Empty' };
     });
 
+    const renderStatusText = () => {
+        if (isPrinting) return `${progress}%`;
+        if (isCooldown) return (
+            <div className="flex items-center gap-1.5 text-blue-400 min-w-0">
+                <Snowflake size={12} className="animate-pulse flex-shrink-0" />
+                <span className="truncate">COOLING...</span>
+            </div>
+        );
+        if (isClearingBed) return (
+            <div className="flex items-center gap-1.5 text-amber-400 animate-pulse min-w-0">
+                <ArrowRightLeft size={12} className="flex-shrink-0" />
+                <span className="truncate">EJECTING...</span>
+            </div>
+        );
+        return <span className="truncate text-slate-400 font-bold">{status.toUpperCase().replace('_', ' ')}</span>;
+    };
+
     return (
         <div className={cn(
-            "group relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all hover:border-slate-700 h-[150px]",
-            "flex flex-col select-none",
-            isAwaitingClearance && "border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/20"
+            "group relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all hover:border-slate-700 min-h-[175px]",
+            "flex flex-col select-none p-4",
+            isActionRequired && "ring-1 ring-inset ring-white/10"
         )}>
             {/* Delete Confirmation Overlay */}
             {showDeleteConfirm && (
-                <div className="absolute inset-0 z-50 bg-slate-950/95 flex flex-col items-center justify-center text-center p-4 animate-in fade-in duration-200">
+                <div className="absolute inset-0 z-50 bg-slate-950/95 flex flex-col items-center justify-center text-center p-4">
                     <AlertTriangle className="text-red-500 mb-2" size={24} />
-                    <p className="text-white font-bold text-sm mb-1">Delete {printer.name}?</p>
-                    <p className="text-[10px] text-slate-500 mb-4">This action cannot be undone.</p>
+                    <p className="text-white font-bold text-sm mb-1">Delete Printer?</p>
+                    <p className="text-slate-400 text-[10px] mb-4 uppercase tracking-tighter">{printer.name}</p>
                     <div className="flex gap-2 w-full">
-                        <button
-                            onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(false); }}
-                            className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={handleDelete}
-                            disabled={isDeleting}
-                            className="flex-1 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center"
-                        >
+                        <button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(false); }} className="flex-1 py-1.5 bg-slate-800 text-slate-300 text-xs font-bold rounded-lg hover:bg-slate-700">Cancel</button>
+                        <button onClick={handleDelete} className="flex-1 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-500 transition-colors uppercase">
                             {isDeleting ? <Loader2 size={12} className="animate-spin" /> : 'Delete'}
                         </button>
                     </div>
                 </div>
             )}
 
-            {/* 4px Colored Strip on Left */}
-            <div className={cn("absolute left-0 top-0 bottom-0 w-1 transition-all group-hover:w-1.5", config.progress)} />
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            {/* ZONE 1: HEADER (Identity) */}
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            <div className="flex justify-between items-center gap-3 mb-4">
+                <TooltipProvider>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2.5 overflow-hidden min-w-0 flex-1 cursor-default">
+                                <div className={cn(
+                                    "w-2 h-2 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] flex-shrink-0",
+                                    config.progress,
+                                    isActionRequired && "animate-pulse"
+                                )} />
+                                <h3 className="font-bold text-white uppercase tracking-tight text-[13px] truncate leading-none">
+                                    {printer.name}
+                                </h3>
+                            </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-[300px] break-all">
+                            <p>{printer.name}</p>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
 
-            <div className="flex-1 p-3 pl-4 flex flex-col justify-between">
-                {/* Header */}
-                <div className="flex justify-between items-start">
-                    <div className="flex flex-col gap-1 overflow-hidden">
-                        <div className="flex items-center gap-2">
-                            {/* Colored Dot Status */}
-                            <div className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]", config.progress)} />
-                            <h3 className="font-bold text-white truncate uppercase tracking-tight text-sm" title={printer.name}>
-                                {printer.name}
-                            </h3>
-                        </div>
-                    </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                    <TooltipProvider>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setIsCameraOpen(true); }}
+                                    disabled={status === 'offline'}
+                                    className={cn(
+                                        "p-1.5 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed",
+                                        status !== 'offline' && "hover:text-amber-400"
+                                    )}
+                                >
+                                    <Camera size={14} />
+                                </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                                <p>View Live Stream</p>
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
 
-                    {/* Action Buttons - Always Visible (no opacity classes) */}
-                    <div className="flex gap-1">
+                    <div className="relative">
                         <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setShowDeleteConfirm(true);
-                            }}
-                            className="p-1.5 text-slate-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all active:scale-95"
-                            title="Delete Printer"
-                        >
-                            <Trash2 size={14} />
-                        </button>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onSettingsClick?.(printer);
-                            }}
+                            onClick={(e) => { e.stopPropagation(); setShowDropdown(!showDropdown); }}
                             className="p-1.5 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all active:scale-95"
                         >
-                            <Settings size={14} />
+                            <MoreVertical size={14} />
                         </button>
-                    </div>
-                </div>
 
-                {/* AMS Slots Visual - Simple Circular Divs */}
-                <div className="flex items-center gap-2 my-1">
-                    <span className="text-[9px] text-slate-600 font-bold tracking-wider">AMS</span>
-                    <div className="flex items-center gap-1.5 bg-slate-950/50 px-2 py-1 rounded-full border border-slate-800">
-                        {amsDisplay.map((slot, idx) => (
-                            <div
-                                key={idx}
-                                className="h-4 w-4 rounded-full border border-slate-600/50 shadow-sm"
-                                style={{ backgroundColor: formatColor(slot.color_hex) }}
-                                title={`${slot.material || 'Unknown'} (${slot.color_hex || 'No Color'})`}
-                            />
-                        ))}
-                    </div>
-
-                    {/* Controls Integration */}
-                    <div className="ml-auto">
-                        <PrinterControls printer={printer} />
-                    </div>
-                </div>
-
-                {/* Footer: Progress Bar, Status Text, and Clearance Action */}
-                <div className="space-y-1">
-                    <div className="flex justify-between items-end text-[10px] font-black uppercase tracking-widest leading-none mb-1">
-                        {/* Status Text & CLEAR PLATE Action */}
-                        <div className={cn("flex items-center gap-2", config.text)}>
-                            {isPrinting && `${progress}%`}
-
-                            {/* Phase 6: Automation States */}
-                            {isCooldown && (
-                                <div className="flex items-center gap-1.5 text-blue-400">
-                                    <Snowflake size={12} className="animate-pulse" />
-                                    <span>COOLING (Thermal Release)...</span>
+                        {showDropdown && (
+                            <>
+                                <div className="fixed inset-0 z-40" onClick={() => setShowDropdown(false)} />
+                                <div className="absolute right-0 top-full mt-1 z-50 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1 min-w-[140px] animate-in fade-in slide-in-from-top-1">
+                                    <button onClick={(e) => { e.stopPropagation(); onSettingsClick?.(printer); setShowDropdown(false); }} className="w-full px-3 py-2 text-left text-xs text-slate-300 hover:bg-slate-700 hover:text-white flex items-center gap-2 transition-colors">
+                                        <Settings size={12} /> Settings
+                                    </button>
+                                    <div className="h-px bg-slate-700 my-1" />
+                                    <button onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(true); setShowDropdown(false); }} className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2 transition-colors">
+                                        <Trash2 size={12} /> Delete Printer
+                                    </button>
                                 </div>
-                            )}
-                            {isClearingBed && (
-                                <div className="flex items-center gap-1.5 text-amber-400 animate-pulse">
-                                    <ArrowRightLeft size={12} />
-                                    <span>AUTO-EJECTING...</span>
-                                </div>
-                            )}
-
-                            {/* Manual Clearance Required */}
-                            {isAwaitingClearance && (
-                                <div className="flex items-center gap-1.5 text-red-400">
-                                    <AlertTriangle size={12} />
-                                    <span>
-                                        {printer.last_job?.job_metadata?.is_auto_eject_enabled === false
-                                            ? "MANUAL CLEAR: HEIGHT SAFETY (<38mm)"
-                                            : "MANUAL CLEARANCE REQUIRED"}
-                                    </span>
-                                </div>
-                            )}
-
-                            {/* Phase 7: HMS Watchdog Error States */}
-                            {isError && (
-                                <div className="flex items-center gap-1.5 text-red-500 animate-pulse">
-                                    <AlertTriangle size={12} />
-                                    <span className="truncate max-w-[180px]" title={printer.last_error_description}>
-                                        ⚠️ {printer.last_error_description || 'Hardware Error'}
-                                    </span>
-                                </div>
-                            )}
-                            {isPaused && (
-                                <div className="flex items-center gap-1.5 text-orange-400">
-                                    <AlertTriangle size={12} />
-                                    <span className="truncate max-w-[180px]" title={printer.last_error_description}>
-                                        {printer.last_error_description || 'Paused - Intervention Required'}
-                                    </span>
-                                </div>
-                            )}
-
-                            {/* Default status display */}
-                            {!isPrinting && !isAwaitingClearance && !isCooldown && !isClearingBed && !isError && !isPaused && status.toUpperCase().replace('_', ' ')}
-                        </div>
-
-                        {/* Time Remaining */}
-                        {isPrinting && timeLeft && (
-                            <span className="text-slate-500 flex items-center gap-1 font-mono">
-                                <Clock size={10} /> {timeLeft}
-                            </span>
+                            </>
                         )}
                     </div>
-
-                    {/* Progress Bar - Visible if Printing OR Awaiting Clearance */}
-                    {showProgressBar && (
-                        <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-950/50">
-                            <div
-                                className={cn("h-full transition-all duration-1000 shadow-[0_0_10px_rgba(0,0,0,0.3)]", config.progress, isClearingBed && "animate-pulse")}
-                                style={{ width: isCooldown || isClearingBed ? '100%' : `${progress}%` }}
-                            />
-                        </div>
-                    )}
-
-                    {/* Phase 6: Manual Intervention Button for AWAITING_CLEARANCE */}
-                    {isAwaitingClearance && (
-                        <button
-                            onClick={handleClearance}
-                            disabled={isClearing}
-                            className="w-full mt-1 py-1.5 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 shadow-lg shadow-green-900/30"
-                        >
-                            {isClearing ? (
-                                <>
-                                    <Loader2 size={12} className="animate-spin" />
-                                    <span>Confirming...</span>
-                                </>
-                            ) : (
-                                <>
-                                    <CheckCircle2 size={12} />
-                                    <span>Confirm Bed Empty</span>
-                                </>
-                            )}
-                        </button>
-                    )}
-
-                    {/* Phase 7: Error/Paused Clear Button */}
-                    {(isError || isPaused) && (
-                        <button
-                            onClick={handleClearError}
-                            disabled={isClearing}
-                            className="w-full mt-1 py-1.5 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 shadow-lg shadow-red-900/30 animate-pulse"
-                        >
-                            {isClearing ? (
-                                <>
-                                    <Loader2 size={12} className="animate-spin" />
-                                    <span>Clearing...</span>
-                                </>
-                            ) : (
-                                <>
-                                    <AlertTriangle size={12} />
-                                    <span>Clear Error & Reset</span>
-                                </>
-                            )}
-                        </button>
-                    )}
                 </div>
             </div>
+
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            {/* ZONE 2: BODY (Integrated Filament Tray) */}
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            <div className="grid grid-cols-4 gap-2 mb-4">
+                {amsDisplay.map((slot, idx) => {
+                    const isEmpty = !slot.color_hex;
+                    const bgColor = formatColor(slot.color_hex);
+
+                    return (
+                        <div
+                            key={idx}
+                            className={cn(
+                                "h-12 rounded-lg bg-zinc-900 border border-white/5 flex flex-col items-center justify-between p-1.5 relative group/slot transition-all",
+                                isEmpty ? "opacity-40 grayscale" : "hover:border-white/10"
+                            )}
+                            title={`Slot A${idx + 1}: ${slot.material || 'Empty'}`}
+                        >
+                            <span className="absolute top-1 left-1.5 text-[8px] font-black text-muted-foreground uppercase opacity-40">
+                                A{idx + 1}
+                            </span>
+
+                            <div className="flex-1 flex items-end justify-center w-full pb-1">
+                                {!isEmpty ? (
+                                    <div
+                                        className="h-1.5 w-6 rounded-full shadow-sm"
+                                        style={{ backgroundColor: bgColor }}
+                                    />
+                                ) : (
+                                    <div className="h-1.5 w-6 rounded-full bg-slate-700/30 dashed border border-slate-700/50" />
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            {/* ZONE 3: FOOTER (Progress & Action) */}
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            <div className="mt-auto">
+                {isActionRequired ? (
+                    <button
+                        onClick={isAwaitingClearance ? handleClearance : handleClearError}
+                        disabled={isActionPending}
+                        className={cn(
+                            "w-full h-11 rounded-lg font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all active:scale-[0.98] border border-white/10 animate-pulse",
+                            isAwaitingClearance
+                                ? "bg-emerald-500 hover:bg-emerald-400 text-white shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                                : "bg-orange-600 hover:bg-orange-500 text-white shadow-[0_0_15px_rgba(234,88,12,0.3)]"
+                        )}
+                    >
+                        {isActionPending ? <Loader2 size={16} className="animate-spin" /> : (
+                            <>
+                                {isAwaitingClearance ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                                <span>{isAwaitingClearance ? 'CONFIRM BED EMPTY' : 'RESOLVE ERROR'}</span>
+                            </>
+                        )}
+                    </button>
+                ) : (
+                    <div className="space-y-2">
+                        <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-widest h-3 px-0.5">
+                            <div className={cn("flex items-center gap-2", config.text)}>
+                                {renderStatusText()}
+                            </div>
+                            {timeLeft && (
+                                <span className="text-slate-500 flex items-center gap-1 font-mono">
+                                    <Clock size={9} /> {timeLeft}
+                                </span>
+                            )}
+                        </div>
+                        <div className="h-2.5 w-full bg-slate-800/80 rounded-full overflow-hidden border border-slate-700/20">
+                            <div
+                                className={cn("h-full transition-all duration-1000 rounded-full", config.progress, (isClearingBed || isCooldown) && "animate-pulse")}
+                                style={{ width: (isCooldown || isClearingBed) ? '100%' : `${progress}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
+            </div>
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            {/* DIALOGS */}
+            {/* ═══════════════════════════════════════════════════════════════ */}
+            <PrinterCameraDialog
+                printer={printer}
+                open={isCameraOpen}
+                onOpenChange={setIsCameraOpen}
+            />
         </div>
     );
-};
+}
