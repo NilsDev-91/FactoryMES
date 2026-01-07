@@ -48,3 +48,15 @@ class SafetyException(Exception):
 class StrategyNotApplicableError(SafetyException):
     """Raised when a specific ejection strategy cannot be applied to the current part."""
     pass
+
+class SpoolMismatchError(SafetyException):
+    """Raised when no suitable filament is found in the printer's AMS for a job."""
+    def __init__(self, printer_serial: str, material: str, color_hex: str):
+        self.message = f"Spool Mismatch: Printer {printer_serial} does not have {material} in color {color_hex} available."
+        super().__init__(self.message)
+
+class PrinterNetworkError(SafetyException):
+    """Raised when communication with a printer fails (MQTT/FTP)."""
+    def __init__(self, printer_serial: str, message: str):
+        self.message = f"Printer {printer_serial} Network Error: {message}"
+        super().__init__(self.message)

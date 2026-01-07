@@ -19,10 +19,9 @@ if sys.platform.startswith("win"):
 
 from app.core.config import settings
 from app.core.database import engine, async_session_maker
-from app.models import * # Load all models for metadata discovery
-from app.models.core import SQLModel, Printer
-from app.routers import system, printers, products, orders, ebay, auth, printer_control, fms
-from app.services.printer.mqtt_worker import PrinterMqttWorker
+from app.models import SQLModel, Printer # Load all models for metadata discovery
+from app.routers import system, printers, products, orders, ebay, auth, printer_control, fms, jobs
+
 from app.core.redis import close_redis_connection
 # NEU: Importiere die Dispatcher Klasse
 from app.services.production.dispatcher import ProductionDispatcher 
@@ -48,23 +47,30 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("Database unreachable") from e
     
     # 2. Start MQTT Workers
-    app.state.mqtt_tasks = {}
     try:
-        mqtt_worker = PrinterMqttWorker()
+        from app.services.printer.mqtt_worker import BambuMQTTWorker
+        mqtt_worker = BambuMQTTWorker()
         async with async_session_maker() as session:
             result = await session.execute(select(Printer))
             printers_list = result.scalars().all()
             
-            for printer in printers_list:
-                if printer.ip_address and printer.access_code:
-                    task = asyncio.create_task(
-                        mqtt_worker.start_listening(printer.ip_address, printer.access_code, printer.serial)
-                    )
-                    app.state.mqtt_tasks[printer.serial] = task
-                    logger.info(f"👂 MQTT Listener started for {printer.serial}")
+            printers_config = [
+                {
+                    "ip": p.ip_address,
+                    "access_code": p.access_code,
+                    "serial": p.serial
+                }
+                for p in printers_list if p.ip_address and p.access_code
+            ]
+            
+            if printers_config:
+                app.state.mqtt_worker_task = asyncio.create_task(
+                    mqtt_worker.run(printers_config)
+                )
+                logger.info(f"👂 High-Performance MQTT Worker started for {len(printers_config)} printers.")
 
     except Exception as e:
-        logger.error(f"Lifespan ERROR: Failed to initialize MQTT workers: {e}", exc_info=True)
+        logger.error(f"Lifespan ERROR: Failed to initialize MQTT worker: {e}", exc_info=True)
 
     # 3. Start Production Dispatcher
     try:
@@ -101,10 +107,12 @@ async def lifespan(app: FastAPI):
         app.state.order_processor_task.cancel()
         
     # Stop MQTT
-    if hasattr(app.state, "mqtt_tasks"):
-        for task in app.state.mqtt_tasks.values():
-            task.cancel()
-        await asyncio.gather(*app.state.mqtt_tasks.values(), return_exceptions=True)
+    if hasattr(app.state, "mqtt_worker_task"):
+        app.state.mqtt_worker_task.cancel()
+        try:
+            await app.state.mqtt_worker_task
+        except asyncio.CancelledError:
+            pass
     
     # Close Redis Connection
     await close_redis_connection()
@@ -138,6 +146,7 @@ app.include_router(products.router, prefix="/api")
 app.include_router(orders.router, prefix="/api")
 app.include_router(printer_control.router, prefix="/api")
 app.include_router(fms.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 
 @app.get("/")
 async def root():

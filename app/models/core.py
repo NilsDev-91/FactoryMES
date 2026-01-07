@@ -1,9 +1,9 @@
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, Any, Dict, TYPE_CHECKING
 from datetime import datetime, timezone
 import uuid
 from sqlalchemy import JSON, Column, DateTime
-from sqlmodel import SQLModel, Field, Relationship
+from sqlmodel import SQLModel, Field, Relationship, JSON
 from enum import Enum
 if TYPE_CHECKING:
     from app.models.filament import AmsSlot, FilamentProfile
@@ -22,16 +22,7 @@ class PrinterTypeEnum(str, Enum):
     A1_MINI = "A1 Mini"
     X1E = "X1E"
 
-class PrinterStatusEnum(str, Enum):
-    IDLE = "IDLE"
-    PRINTING = "PRINTING"
-    AWAITING_CLEARANCE = "AWAITING_CLEARANCE"
-    COOLDOWN = "COOLDOWN"   # Waiting for thermal release
-    CLEARING_BED = "CLEARING_BED"   # Execution of clearing G-code
-    OFFLINE = "OFFLINE"
-    # Phase 7: HMS Watchdog States
-    ERROR = "ERROR"   # Hardware error detected via HMS
-    PAUSED = "PAUSED"   # User intervention required (e.g. filament runout)
+
 
 class ClearingStrategyEnum(str, Enum):
     MANUAL = "MANUAL"
@@ -39,112 +30,31 @@ class ClearingStrategyEnum(str, Enum):
     A1_TOOLHEAD_PUSH = "A1_TOOLHEAD_PUSH"     # Nozzle Ram for parts <38mm
     X1_MECHANICAL_SWEEP = "X1_MECHANICAL_SWEEP"
 
-class JobStatusEnum(str, Enum):
-    PENDING = "PENDING"
-    UPLOADING = "UPLOADING"
-    PRINTING = "PRINTING"
-    FINISHED = "FINISHED"     # SUCCESS state
-    BED_CLEARING = "BED_CLEARING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+
 
 # Legacy Order removed, moved to app.models.order
 
-class Printer(SQLModel, table=True):
-    __tablename__ = "printers"
+# --- Redundant Models Commented Out to resolve SQLModel metadata conflicts ---
+# Use app.models.printer.Printer and app.models.job.PrintJob instead
 
-    serial: str = Field(primary_key=True)
-    name: str
-    ip_address: Optional[str] = None
-    access_code: Optional[str] = None
-    type: PrinterTypeEnum
-    current_status: PrinterStatusEnum = Field(default=PrinterStatusEnum.IDLE)
-    current_temp_nozzle: float = Field(default=0.0)
-    current_temp_bed: float = Field(default=0.0)
-    is_plate_cleared: bool = Field(default=True)
-    hardware_model: Optional[str] = Field(default="GENERIC") # Enum: A1, X1C, etc.
-    can_auto_eject: bool = Field(default=False)
-    clearing_strategy: ClearingStrategyEnum = Field(default=ClearingStrategyEnum.MANUAL)
-    thermal_release_temp: float = Field(default=29.0) # Release part when bed < this temp
-    
-    # Smart Calibration Logic
-    jobs_since_calibration: int = Field(default=0)
-    calibration_interval: int = Field(default=5)
-    
-    current_progress: int = Field(default=0) # Percentage 0-100
-    remaining_time: int = Field(default=0) # Minutes
-    
-    # Stores AMS state as JSON
-    # Example: [{"slot": 0, "type": "PLA", "color": "#FF0000", "remaining": 100}, ...]
-    ams_data: List[dict] = Field(default=[], sa_column=Column(JSON))
-    
-    current_job_id: Optional[int] = Field(default=None)
+# class Printer(SQLModel, table=True):
+#     __tablename__ = "printers"
+# ...
+# class Job(SQLModel, table=True):
+#     __tablename__ = "jobs"
+# ...
 
-    # Phase 7: HMS Watchdog Error Tracking
-    last_error_code: Optional[str] = Field(default=None, description="Last HMS error code")
-    last_error_time: Optional[datetime] = Field(
-        default=None, 
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Timestamp of last error"
-    )
-    last_error_description: Optional[str] = Field(default=None, description="Human-readable error description")
-
-    jobs: List["Job"] = Relationship(back_populates="assigned_printer")
-    ams_slots: List["AmsSlot"] = Relationship(back_populates="printer")
-
-class Job(SQLModel, table=True):
-    __tablename__ = "jobs"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    order_id: int = Field(foreign_key="orders.id")
-    assigned_printer_serial: Optional[str] = Field(default=None, foreign_key="printers.serial")
-    gcode_path: str
-    status: JobStatusEnum = Field(default=JobStatusEnum.PENDING)
-    priority: int = Field(default=0, index=True)
-    error_message: Optional[str] = None
-    
-    # Requirements derived from Product/Variation
-    filament_requirements: Optional[dict] = Field(default=None, sa_column=Column(JSON))
-    
-    # Job Metadata (e.g. model_height_mm)
-    job_metadata: Optional[dict] = Field(default={}, sa_column=Column(JSON))
-    
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-    updated_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
-
-    order: Optional["Order"] = Relationship(back_populates="jobs")
-    assigned_printer: Optional[Printer] = Relationship(back_populates="jobs")
-
-class ProductRequirement(SQLModel, table=True):
-    """
-    Links a ProductSKU to a specific FilamentProfile requirement.
-    """
-    __tablename__ = "product_requirements"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    product_sku_id: int = Field(foreign_key="product_skus.id")
-    filament_profile_id: uuid.UUID = Field(foreign_key="filament_profiles.id")
-
-    product_sku: Optional["ProductSKU"] = Relationship(back_populates="requirements")
-    filament_profile: Optional["FilamentProfile"] = Relationship()
-
-    @property
-    def material(self) -> str:
-        return self.filament_profile.material if self.filament_profile else "Unknown"
-
-    @property
-    def color_hex(self) -> str:
-        return self.filament_profile.color_hex if self.filament_profile else "#000000"
-
-    @property
-    def brand(self) -> str:
-        return self.filament_profile.brand if self.filament_profile else "Generic"
+# ProductRequirement commented out to resolve foreign key conflicts with deleted FilamentProfile
+# class ProductRequirement(SQLModel, table=True):
+#     """
+#     Links a ProductSKU to a specific FilamentProfile requirement.
+#     """
+#     __tablename__ = "product_requirements"
+# 
+#     id: Optional[int] = Field(default=None, primary_key=True)
+#     product_sku_id: int = Field(foreign_key="product_skus.id")
+#     filament_profile_id: uuid.UUID = Field(foreign_key="filament_profiles.id")
+# ...
 
 class Product(SQLModel, table=True):
     __tablename__ = "products"
@@ -166,7 +76,7 @@ class Product(SQLModel, table=True):
     required_filament_color: Optional[str] = Field(default=None) # Hex Code or Name, e.g. "#FF0000"
     
     # New: JSON Requirements for multi-color/master slicing
-    filament_requirements: Optional[List[dict]] = Field(default=None, sa_column=Column(JSON))
+    filament_requirements: Optional[List[Dict[str, Any]]] = Field(default=None, sa_type=JSON)
 
     # Phase 6: Continuous Printing (Automation Safety)
     part_height_mm: Optional[float] = Field(

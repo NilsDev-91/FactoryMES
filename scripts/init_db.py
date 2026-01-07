@@ -3,7 +3,8 @@ import asyncio
 import sys
 from sqlmodel import select, SQLModel
 from app.core.database import engine, async_session_maker
-from app.models.core import Printer, Product, PlatformEnum, PrinterTypeEnum, PrinterStatusEnum, OrderStatusEnum
+from app.models.printer import Printer, PrinterState
+from app.models.core import Product, PlatformEnum, OrderStatusEnum
 from app.models.order import Order, OrderItem
 from datetime import datetime
 import uuid
@@ -30,8 +31,8 @@ async def init_db():
                 name="Bambu Lab A1 - Test",
                 ip_address="192.168.2.213",
                 access_code="05956746",
-                type=PrinterTypeEnum.A1,
-                current_status=PrinterStatusEnum.IDLE
+                model="A1",
+                current_state=PrinterState.IDLE
             )
             session.add(printer)
         

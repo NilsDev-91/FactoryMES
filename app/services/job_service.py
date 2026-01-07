@@ -1,7 +1,7 @@
 from typing import Optional, List
 from sqlmodel import select, col
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.core import Job, JobStatusEnum, Printer
+from app.models import PrintJob as Job, JobStatus as JobStatusEnum, Printer
 
 class JobService:
     """

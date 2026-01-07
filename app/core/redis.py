@@ -20,6 +20,9 @@ def get_redis_client() -> redis.Redis:
         )
     return _redis_client
 
+# Convenience alias for workers
+redis_client = get_redis_client()
+
 async def close_redis_connection():
     """Closes the Redis connection if it exists."""
     global _redis_client

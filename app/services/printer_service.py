@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models.core import Printer, PrinterStatusEnum
+from app.models.printer import Printer, PrinterState
 from app.schemas.printer_cache import PrinterStateCache
-from app.models.printer import PrinterRead
+from app.models import PrinterRead
 from app.core.redis import get_redis_client
 
 class PrinterService:
@@ -21,24 +21,23 @@ class PrinterService:
             # --- THE INHERITANCE LATCH (DB -> CACHE) ---
             # If the database says we are in an operational state, do not allow 
             # real-time telemetry to downgrade us to IDLE.
-            # This solves the "Split Brain" during uploads or while state is transitioning.
-            db_status = printer_db.current_status
+            db_status = printer_db.current_state
             hot_status = cached_state.status
             
             protected_states = [
-                PrinterStatusEnum.PRINTING,
-                PrinterStatusEnum.COOLDOWN,
-                PrinterStatusEnum.CLEARING_BED,
-                PrinterStatusEnum.AWAITING_CLEARANCE,
-                PrinterStatusEnum.ERROR,
-                PrinterStatusEnum.PAUSED
+                PrinterState.PRINTING,
+                PrinterState.COOLDOWN,
+                PrinterState.CLEARING_BED,
+                PrinterState.AWAITING_CLEARANCE,
+                PrinterState.ERROR,
+                PrinterState.PAUSED
             ]
             
-            if db_status in protected_states and hot_status == PrinterStatusEnum.IDLE:
+            if db_status in protected_states and hot_status == PrinterState.IDLE:
                 # Latch: Keep the high-priority DB status
-                printer_data["status"] = db_status
+                printer_data["status"] = db_status.value
             else:
-                printer_data["status"] = hot_status
+                printer_data["status"] = hot_status.value if hasattr(hot_status, 'value') else str(hot_status)
 
             # Overwrite other fields with hot telemetry
             printer_data["temps"] = cached_state.temps
@@ -51,7 +50,7 @@ class PrinterService:
             printer_data["is_online"] = not cached_state.is_stale
         else:
             # OFFLINE Fallback
-            printer_data["status"] = PrinterStatusEnum.OFFLINE
+            printer_data["status"] = "OFFLINE"
             printer_data["temps"] = {"nozzle": 0.0, "bed": 0.0}
             printer_data["nozzle_temp"] = 0.0
             printer_data["bed_temp"] = 0.0
@@ -61,9 +60,6 @@ class PrinterService:
             printer_data["is_online"] = False
             printer_data["ams"] = []
 
-        # Fix: Explicitly map ams_slots relation which model_dump() excludes
-        printer_data["ams_slots"] = printer_db.ams_slots
-
         return PrinterRead(**printer_data)
 
     async def get_printer(self, session: AsyncSession, serial: str) -> Optional[PrinterRead]:
@@ -71,7 +67,7 @@ class PrinterService:
         Fetch single printer with merged state.
         """
         # 1. DB Fetch
-        statement = select(Printer).where(Printer.serial == serial).options(selectinload(Printer.ams_slots))
+        statement = select(Printer).where(Printer.serial == serial)
         result = await session.execute(statement)
         printer_db = result.scalars().first()
         if not printer_db:
@@ -93,7 +89,7 @@ class PrinterService:
         Fetch all printers with merged state (Optimized via MGET).
         """
         # 1. Fetch all static config from DB
-        statement = select(Printer).options(selectinload(Printer.ams_slots))
+        statement = select(Printer)
         result = await session.execute(statement)
         printers_db = result.scalars().all()
         
