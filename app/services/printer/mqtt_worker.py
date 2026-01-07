@@ -13,8 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import async_session_maker
-from app.models.core import Printer, PrinterStatusEnum, ClearingStrategyEnum, JobStatusEnum
-from app.models.filament import AmsSlot
+from app.models.core import Printer, PrinterStatusEnum, ClearingStrategyEnum, JobStatusEnum, Job
+from app.models.filament import AmsSlot, FilamentProfile
 from app.services.print_job_executor import PrintJobExecutionService
 from app.services.printer.commander import PrinterCommander
 from app.services.production.bed_clearing_service import BedClearingService
@@ -176,6 +176,22 @@ class PrinterMqttWorker:
                         logger.info(f"♻️ Infinite Loop Cycle Complete. Printer {serial} reset to IDLE. Plate is now CLEARED.")
                         printer.current_status = PrinterStatusEnum.IDLE
                         printer.is_plate_cleared = True
+                        
+                        # Phase 12: Mark the job as COMPLETED
+                        job_stmt = (
+                            select(Job)
+                            .where(Job.assigned_printer_serial == serial, Job.status == JobStatusEnum.BED_CLEARING)
+                            .order_by(Job.updated_at.desc())
+                            .limit(1)
+                        )
+                        job_res = await session.execute(job_stmt)
+                        bed_job = job_res.scalars().first()
+                        if bed_job:
+                            logger.info(f"Marking Job {bed_job.id} as COMPLETED after bed clearing.")
+                            bed_job.status = JobStatusEnum.COMPLETED
+                            bed_job.updated_at = datetime.now(timezone.utc)
+                            session.add(bed_job)
+
                         session.add(printer)
                         await session.commit()
                         updated_cache["is_plate_cleared"] = True
@@ -398,11 +414,23 @@ class PrinterMqttWorker:
                     # But we can just iterate and update if attached to session
                     await session.refresh(printer, ["ams_slots"])
                     
+                    # Fetch profiles for color name resolution
+                    profiles_res = await session.execute(select(FilamentProfile))
+                    profiles = profiles_res.scalars().all()
+
+                    def normalize_hex(h: str) -> str:
+                        if not h: return ""
+                        return h.lstrip("#")[:6].upper()
+                    
                     for ams_idx, ams_unit in enumerate(ams_list):
                         tray_list = ams_unit.get("tray", [])
-                        for tray_idx, tray_data in enumerate(tray_list):
+                        for tray_data in tray_list:
+                            if not tray_data or "id" not in tray_data:
+                                continue
+                                
+                            tray_idx = int(tray_data["id"])
+                            
                             # Find matching slot in printer.ams_slots
-                            # Optimization: Could map by (ams, slot) first, but list is small (4-16)
                             target_slot = None
                             for slot in printer.ams_slots:
                                 if slot.ams_index == ams_idx and slot.slot_index == tray_idx:
@@ -442,6 +470,15 @@ class PrinterMqttWorker:
                                     
                                 if "remain" in tray_data:
                                     target_slot.remaining_percent = int(tray_data["remain"])
+                                    
+                                # Resolve color name from profiles
+                                if target_slot.material and target_slot.color_hex:
+                                    norm_hex = normalize_hex(target_slot.color_hex)
+                                    match = next((p for p in profiles if p.material == target_slot.material and normalize_hex(p.color_hex) == norm_hex), None)
+                                    if match:
+                                        target_slot.color_name = match.color_name
+                                    else:
+                                        target_slot.color_name = None
                                     
                                 session.add(target_slot)
 

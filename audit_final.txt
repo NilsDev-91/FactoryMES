@@ -1,0 +1,34 @@
+--- SYSTEM AUDIT ---
+
+[PRINTERS]
+SERIAL: TEST_PRINTER_RECOVERY | NAME: Test Recovery | STATUS: PrinterStatusEnum.IDLE
+SERIAL: 03919C461802608 | NAME: A1 REAL | STATUS: PrinterStatusEnum.IDLE
+  SLOT 0: PLA #000000
+  SLOT 1: PLA #FF0000
+
+[PRODUCTS]
+ID: 40 | SKU: EYE | NAME: Eye | 3MF: 
+ID: 42 | SKU: TPO-001 | NAME: Test Product Original | 3MF: 
+ID: 43 | SKU: TEST-15D1EB5E | NAME: Test Product Original | 3MF: 
+ID: 44 | SKU: TEST-26E7D083 | NAME: Test Product Original | 3MF: 
+ID: 59 | SKU: ZYLINDER-V2-RED | NAME: Zylinder v2 Red (Simulated) | 3MF: storage/3mf/0d14acd1-dfd8-4190-9d6e-3e6e13b0e448.3mf
+ID: 45 | SKU: TPU-999 | NAME: Test Product UPDATED | 3MF: 
+ID: 46 | SKU: TEST-0413E81D | NAME: Test Product Original | 3MF: 
+ID: 47 | SKU: UPDATED-C77C2AF5 | NAME: Test Product UPDATED | 3MF: 
+ID: 48 | SKU: UPDATED-FD35F7B9 | NAME: Test Product UPDATED | 3MF: 
+ID: 51 | SKU: ZYLINDER | NAME: Zylinder | 3MF: 
+ID: 56 | SKU: ZYlinder-v2 | NAME: Zylinder V2 | 3MF: 
+ID: 57 | SKU: Kegel-v3 | NAME: Kegel v3 | 3MF: 
+ID: 58 | SKU: KEGEL-V3-BLACK | NAME: Kegel v3 Black (Simulated) | 3MF: storage/3mf/0d14acd1-dfd8-4190-9d6e-3e6e13b0e448.3mf
+
+[SKUS]
+SKU: Zylinder-PLA-FF0000 | Parent: ZYLINDER | Color: #FF0000
+SKU: Zylinder-PETG-0000FF | Parent: ZYLINDER | Color: #0000FF
+SKU: Zylinder-PLA-FFFFFF | Parent: ZYLINDER | Color: #FFFFFF
+SKU: ZYLINDER | Parent: ZYLINDER | Color: None
+SKU: ZYlinder-v2 | Parent: ZYlinder-v2 | Color: None
+SKU: ZYlinder-v2-PLA-FF0000 | Parent: ZYlinder-v2 | Color: #FF0000
+SKU: ZYlinder-v2-PLA-000000FF | Parent: ZYlinder-v2 | Color: 000000FF
+SKU: Kegel-v3-PLA-000000FF | Parent: Kegel-v3 | Color: 000000FF
+SKU: Kegel-v3-PLA-FF0000 | Parent: Kegel-v3 | Color: #FF0000
+SKU: Kegel-v3 | Parent: Kegel-v3 | Color: None

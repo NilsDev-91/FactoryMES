@@ -43,7 +43,9 @@ class JobStatusEnum(str, Enum):
     PENDING = "PENDING"
     UPLOADING = "UPLOADING"
     PRINTING = "PRINTING"
-    FINISHED = "FINISHED"
+    FINISHED = "FINISHED"     # SUCCESS state
+    BED_CLEARING = "BED_CLEARING"
+    COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
 # Legacy Order removed, moved to app.models.order

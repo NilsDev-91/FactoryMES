@@ -30,68 +30,6 @@ class JobExecutor:
     def __init__(self):
         self.is_running = False
 
-    def generate_a1_ejection(self, meta: PartMetadata) -> str:
-        """
-        Dispatches to the appropriate A1 ejection strategy based on part height.
-        Protocol: A1 Gantry Sweep v1.2
-        """
-        if meta.height_mm >= self.A1_GANTRY_THRESHOLD_MM:
-            logger.info(f"Part height {meta.height_mm}mm >= {self.A1_GANTRY_THRESHOLD_MM}mm -> Selected Strategy A: Gantry Sweep")
-            return self._generate_a1_sweep_gcode(meta)
-        else:
-            logger.info(f"Part height {meta.height_mm}mm < {self.A1_GANTRY_THRESHOLD_MM}mm -> Selected Strategy B: Toolhead Push")
-            return self._generate_a1_toolhead_push_gcode(meta)
-
-    def _generate_a1_sweep_gcode(self, part_metadata: PartMetadata) -> str:
-        """
-        Strategy A: The Gantry Sweep (Height >= 50.0mm)
-        Concept: Use the stationary X-Axis Gantry as a passive ram.
-        Protocol: A1 Gantry Sweep v1.2
-        """
-        return f"""
-; --- STRATEGY: A1_GANTRY_SWEEP (Gantry Beam) ---
-; Protocol: A1 Gantry Sweep v1.2 | Height: {part_metadata.height_mm}mm
-
-M84 S0 ; MOTOR LOCK: (Critical Safety)
-
-; KINEMATICS
-G90 ; Absolute Positioning
-G1 X-13.5 F18000 ; Park Toolhead in cutter area (Clear path)
-G1 Y256 F12000 ; Move Bed to Front (Setup Ram)
-G1 Z4.0 F3000 ; Lower Z to Gantry Level (Beam Level)
-M400
-G1 Y0 F3000 ; SWEEP (Move Bed to Back)
-M400
-
-; RECOVERY
-G1 Z10 F3000 ; Lift Z to reset
-"""
-
-    def _generate_a1_toolhead_push_gcode(self, meta: PartMetadata) -> str:
-        """
-        Strategy B: The Toolhead Push (Height < 50.0mm)
-        Concept: Use the toolhead tip (nozzle) to actively push the part off.
-        Protocol: A1 Gantry Sweep v1.2
-        """
-        return f"""
-; --- STRATEGY: A1_TOOLHEAD_PUSH (Nozzle Tip) ---
-; Protocol: A1 Gantry Sweep v1.2 | Height: {meta.height_mm}mm
-
-M84 S0 ; MOTOR LOCK: (Critical Safety)
-M104 S0 ; SAFETY: Turn off hotend immediately to prevent PEI damage
-
-; KINEMATICS
-G90 ; Absolute Positioning
-G1 Z100 F3000 ; Lift Z for clearance
-G1 X{meta.center_x} Y256 F12000 ; Position nozzle behind the part's X-center
-G1 Z1.5 F3000 ; ENGAGE (Risk Zone)
-M400
-G1 Y0 F3000 ; PUSH (Move Bed Backward)
-M400
-
-; RECOVERY
-G28 ; MANDATORY HOMING (Machine state restoration)
-"""
 
     async def execute_monitored_sweep(self, printer: Printer, meta: PartMetadata):
         """
@@ -101,7 +39,7 @@ G28 ; MANDATORY HOMING (Machine state restoration)
         logger.info(f"Starting MONITORED SWEEP for {printer.serial} (Part: {meta.height_mm}mm)")
         
         # 1. Generate & Seed G-code
-        gcode = A1Kinematics.generate_a1_gantry_sweep_gcode(meta)
+        gcode = A1Kinematics.generate_sweep_sequence(meta.height_mm)
         gcode = GCodeModifier.inject_dynamic_seed(gcode)
         
         # 2. Execution with Retry Logic

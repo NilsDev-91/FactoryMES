@@ -1,81 +1,71 @@
 import logging
-from app.schemas.job import PartMetadata
-from app.core.exceptions import StrategyNotApplicableError
 
-logger = logging.getLogger("Kinematics")
-
-class KinematicSafetyError(StrategyNotApplicableError):
-    """Raised when kinematic constraints are violated."""
-    pass
+logger = logging.getLogger(__name__)
 
 class A1Kinematics:
     """
-    User-Defined Kinematics for Bambu Lab A1 series.
-    Consolidates movement logic for autonomous ejection.
+    Single Source of Truth for A1 Mechanical Sequences.
+    
+    Validated Direction: 
+    - Setup at Y256 (Bed Forward / Nozzle relative to Bed is at Back)
+    - Sweep to Y0 (Bed Backward / Nozzle relative to Bed moves Forward)
     """
     
-    # --- Validated Geometry ---
-    GANTRY_OFFSET_MM = 33.0   # Physical distance Nozzle-to-Beam
-    SWEEP_OVERLAP_MM = 5.0    # Required contact depth
-    MIN_PART_HEIGHT_MM = 40.0 # Safety threshold
-    SAFE_Z_FLOOR_MM = 2.0     # Final Z floor for nozzle
-    
-    @staticmethod
-    def _calculate_sweep_z(part_height_mm: float) -> float:
-        """
-        Calculates the required Nozzle Z height to position the beam
-        at the target contact zone.
-        
-        Math:
-        Example: 40mm Part -> Target Beam 35mm -> Nozzle Z 2.0mm.
-        calc_z = part_height - (GANTRY_OFFSET + SWEEP_OVERLAP)
-        """
-        if part_height_mm < A1Kinematics.MIN_PART_HEIGHT_MM:
-            logger.warning(f"Part height {part_height_mm}mm < {A1Kinematics.MIN_PART_HEIGHT_MM}mm. Gantry Sweep unsafe.")
-            raise KinematicSafetyError(f"Part height {part_height_mm}mm below safe limit of {A1Kinematics.MIN_PART_HEIGHT_MM}mm.")
-            
-        # Target Beam Height: part_height_mm - SWEEP_OVERLAP_MM
-        # Nozzle Z = Target Beam - GANTRY_OFFSET
-        calc_z = part_height_mm - (A1Kinematics.GANTRY_OFFSET_MM + A1Kinematics.SWEEP_OVERLAP_MM)
-        
-        # Clamp to floor
-        return max(A1Kinematics.SAFE_Z_FLOOR_MM, calc_z)
+    # Absolute limits validated against hardware
+    SAFE_Z_FLOOR = 2.0      # mm
+    BEAM_OFFSET = 33.0      # mm (Height of Gantry beam above nozzle)
+    GANTRY_THRESHOLD = 50.0 # mm (Min height for gantry use)
 
     @staticmethod
-    def generate_a1_gantry_sweep_gcode(meta: PartMetadata) -> str:
+    def generate_sweep_sequence(height_mm: float) -> str:
         """
-        Implements the robust "Gantry Sweep" logic.
-        Strictly adhering to user constraints and geometric safety.
+        Generates the G-Code for the Bed Clearing Sweep.
+        Handles the logic for Gantry (Tall) vs Toolhead (Short) push.
         """
-        # Pre-Condition: Bed cooldown is handled by MQTTWorker Thermal Watchdog.
-        # This G-code assumes it is being executed on a cold bed (< 28C).
-        
-        target_z = A1Kinematics._calculate_sweep_z(meta.height_mm)
+        if height_mm >= A1Kinematics.GANTRY_THRESHOLD:
+            return A1Kinematics._gantry_sweep(height_mm)
+        else:
+            return A1Kinematics._toolhead_push(height_mm)
+
+    @staticmethod
+    def _gantry_sweep(height_mm: float) -> str:
+        # Calculate leverage point (60% of part height), clamped to safe floor
+        target_beam_z = height_mm * 0.6
+        sweep_z = max(A1Kinematics.SAFE_Z_FLOOR, target_beam_z - A1Kinematics.BEAM_OFFSET)
         
         return f"""
-; --- STRATEGY: A1_GANTRY_SWEEP (User Defined) ---
-; Protocol: A1 Gantry Sweep v1.3 | Height: {meta.height_mm}mm | Target Z: {target_z:.1f}
-; Calculation: {meta.height_mm}mm - (33.0 offset + 5.0 overlap) = {meta.height_mm - 38.0:.1f}mm (Clamped to {A1Kinematics.SAFE_Z_FLOOR_MM}mm)
+; --- FACTORYOS A1 KINEMATICS: GANTRY SWEEP ---
+; Part Height: {height_mm:.1f}mm | Target Z: {sweep_z:.2f}mm
+M84 S0           ; Disable idle hold (Safety)
+M140 S0          ; Bed Off
+M106 P1 S255     ; Fan Max
+M190 R28         ; Wait for release temp
+G90              ; Absolute Mode
+G28              ; Home All (Ensure accuracy)
+G1 Z100 F3000    ; Lift Safe
+G1 X-13.5 F12000 ; Park Toolhead (Cutter Area - Safe from collision)
+G1 Y256 F12000   ; SETUP: Move Bed Forward (Nozzle is now at Back)
+G1 Z{sweep_z:.2f} F3000 ; Lower Beam
+M400             ; Wait for move
+G1 Y0 F2000      ; ACTION: Move Bed Backward (Nozzle sweeps forward)
+G1 Z100 F3000    ; Recovery Lift
+G28              ; Re-Home
+; -------------------------------------------
+"""
 
-; 1. SAFETY: Disable Sensors & Heaters
-M140 S0 ; Bed Off
-M104 S0 ; Nozzle Off
-M412 S0 ; Disable Filament Runout sensor
-M975 S0 ; Disable Step Loss Recovery
-
-; 2. POSITIONING
-G90 ; Absolute Positioning
-G1 X-13.5 F18000 ; Park X-Min (Safe Park)
-G1 Y0 F12000      ; Align Bed: Bed ALL THE WAY BACK
-G1 Z{target_z:.1f} F3000   ; Engage Z: Lower beam to contact zone
-M400 ; Sync
-
-; 3. EXECUTE
-G1 Y256 F1500     ; THE SWEEP: Move Bed Forward (Push part off front)
-M400 ; Sync
-
-; 4. CLEANUP & RECOVERY
-G1 Z20 F3000      ; Lift Z for clearance
-G28               ; Re-home to reset coordinate system
-; --- END SWEEP ---
+    @staticmethod
+    def _toolhead_push(height_mm: float) -> str:
+        push_z = max(5.0, height_mm + 1.0) # Push slightly above part center or just above bed
+        
+        return f"""
+; --- FACTORYOS A1 KINEMATICS: TOOLHEAD PUSH ---
+M140 S0
+M190 R28
+G28
+G1 Z100
+G1 X128 Y256 F12000 ; Setup: Center Back
+G1 Z{push_z:.2f}    ; Lower Nozzle
+G1 Y0 F2000         ; ACTION: Push Forward
+G28
+; -------------------------------------------
 """

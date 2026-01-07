@@ -132,10 +132,14 @@ class ProductService:
 
                 # Sanitize components for SKU
                 safe_name = dto.name.replace(" ", "_").upper()
-                safe_mat = profile.material.replace(" ", "_").upper()
-                safe_color = profile.color_hex.replace("#", "").upper()
                 
-                variant_sku_str = f"{dto.sku}-{safe_mat}-{safe_color}"
+                if profile.color_name:
+                    safe_color = profile.color_name.replace(" ", "_").upper()
+                    variant_sku_str = f"{dto.sku}-{safe_color}"
+                else:
+                    safe_mat = profile.material.replace(" ", "_").upper()
+                    safe_color_hex = profile.color_hex.replace("#", "").upper()
+                    variant_sku_str = f"{dto.sku}-{safe_mat}-{safe_color_hex}"
                 
                 # Check for SKU collisions
                 existing = await session.execute(select(ProductSKU).where(ProductSKU.sku == variant_sku_str))
@@ -145,12 +149,13 @@ class ProductService:
                 # Create Child SKU
                 child_sku = ProductSKU(
                     sku=variant_sku_str,
-                    name=f"{dto.name} - {profile.material} ({profile.color_hex})",
+                    name=f"{dto.name} - {profile.color_name or profile.material}",
                     is_catalog_visible=False,
                     parent_id=master_sku.id,
                     product_id=master_product.id,
                     print_file_id=dto.print_file_id, # Inherit file from master
-                    hex_color=profile.color_hex
+                    hex_color=profile.color_hex,
+                    color_name=profile.color_name
                 )
                 session.add(child_sku)
                 await session.flush()
@@ -293,10 +298,14 @@ class ProductService:
                         continue
                         
                     safe_name = product.name.replace(" ", "_").upper()
-                    safe_mat = profile.material.replace(" ", "_").upper()
-                    safe_color = profile.color_hex.replace("#", "").upper()
                     
-                    variant_sku_str = f"{product.sku}-{safe_mat}-{safe_color}"
+                    if profile.color_name:
+                        safe_color = profile.color_name.replace(" ", "_").upper()
+                        variant_sku_str = f"{product.sku}-{safe_color}"
+                    else:
+                        safe_mat = profile.material.replace(" ", "_").upper()
+                        safe_color_hex = profile.color_hex.replace("#", "").upper()
+                        variant_sku_str = f"{product.sku}-{safe_mat}-{safe_color_hex}"
                     
                     # Check for existence (idempotency)
                     existing_sku_q = await session.execute(select(ProductSKU).where(ProductSKU.sku == variant_sku_str))
@@ -309,12 +318,13 @@ class ProductService:
                     # Create Child SKU
                     child_sku = ProductSKU(
                         sku=variant_sku_str,
-                        name=f"{product.name} - {profile.material} ({profile.color_hex})",
+                        name=f"{product.name} - {profile.color_name or profile.material}",
                         is_catalog_visible=False,
                         parent_id=master_sku.id,
                         product_id=product.id,
                         print_file_id=product.print_file_id, 
-                        hex_color=profile.color_hex
+                        hex_color=profile.color_hex,
+                        color_name=profile.color_name
                     )
                     session.add(child_sku)
                     await session.flush()

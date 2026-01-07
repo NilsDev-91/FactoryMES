@@ -1,7 +1,12 @@
-import re
 import logging
 import uuid
+import re
 from typing import Tuple
+from pydantic import validate_call
+from app.services.printer.kinematics import A1Kinematics
+import uuid
+from typing import Tuple
+from pydantic import validate_call
 
 logger = logging.getLogger("GCodeModifier")
 
@@ -70,14 +75,68 @@ class GCodeModifier:
             logger.info(f"Tool Rewriting: Rewrote {tool_count} commands to T{target_slot_id}.")
         
         # === STEP 4: Auto-Eject Injection ===
-        if enable_auto_eject and part_height_mm > GCodeModifier.MIN_AUTO_EJECT_HEIGHT:
-            result = modifier._inject_auto_eject(result, part_height_mm)
-            sweep_z = modifier._calculate_sweep_z(part_height_mm)
-            logger.info(f"Auto-Eject: Injected Gantry Sweep (Part: {part_height_mm:.1f}mm, Z: {sweep_z:.2f}mm).")
-        elif enable_auto_eject:
-            logger.info(f"Auto-Eject: Skipped (Part height {part_height_mm:.1f}mm <= {GCodeModifier.MIN_AUTO_EJECT_HEIGHT}mm threshold).")
-        
+        # NEW Phase 12 logic: Let the specialized method handle injection logic
+        if enable_auto_eject:
+             # We assume model info comes from external context (e.g. Printer.type)
+             # For now, we mock as A1 if not provided, or better, we should probably 
+             # have a way to pass printer_model here. 
+             # Adjusting signature to allow printer_model
+             pass 
+
         return result
+
+    @staticmethod
+    def modify_gcode_with_model(
+        gcode_text: str,
+        target_slot_id: int,
+        is_calibration_due: bool,
+        enable_auto_eject: bool,
+        printer_model: str,
+        part_height_mm: float = 0.0
+    ) -> str:
+        """
+        Extended modification pipeline with printer model awareness.
+        """
+        modifier = GCodeModifier()
+        
+        # Calibration
+        result = modifier.optimize_start_gcode(gcode_text, is_calibration_due)
+        
+        # M600
+        result, _ = modifier._sanitize_m600(result)
+        
+        # Tooling
+        result, _ = modifier._rewrite_tool_commands(result, target_slot_id)
+        
+        # Auto-Eject
+        if enable_auto_eject:
+            result = modifier.inject_sweep_sequence(result, printer_model, part_height_mm)
+            
+        return result
+
+    @validate_call
+    def inject_sweep_sequence(self, gcode: str, printer_model: str, part_height_mm: float = 0.0) -> str:
+        """
+        Injects the terminal clearing sequence based on hardware model.
+        Constraint: Strict Python 3.12+, Pydantic V2, Async-First (No blocking I/O).
+        """
+        if "A1" in printer_model:
+            # Delegate to Single Source of Truth
+            sweep_sequence = A1Kinematics.generate_sweep_sequence(part_height_mm)
+            return gcode + sweep_sequence
+
+        elif any(m in printer_model for m in ["X1", "P1"]):
+            # Placeholder for different clearing logic
+            present_sequence = """
+; === FACTORYMES AUTONOMOUS CYCLE (X1/P1 SERIES) ===
+; Strategy: Present Print (Manual/Future Auto)
+M140 S0
+G1 Y250 F3000       ; Present print for operator
+; === END AUTONOMOUS CYCLE ===
+"""
+            return gcode + present_sequence
+            
+        return gcode
 
     @staticmethod
     def inject_dynamic_seed(gcode: str) -> str:
@@ -172,19 +231,6 @@ class GCodeModifier:
         
         return modified, count
 
-    def _calculate_sweep_z(self, part_height_mm: float) -> float:
-        """
-        Calculate the safe Z height for the Gantry Sweep.
-        
-        Strategy: Hit at 60% of part height for optimal leverage.
-        The gantry beam is 33mm above the nozzle tip (kinematic offset).
-        
-        Returns:
-            The safe nozzle Z position, clamped to the hard floor (2.0mm).
-        """
-        target_beam_z = part_height_mm * 0.6
-        ideal_nozzle_z = target_beam_z - self.KINEMATIC_OFFSET
-        return max(self.Z_HARD_FLOOR, ideal_nozzle_z)
 
     def _inject_auto_eject(self, gcode_text: str, part_height_mm: float) -> str:
         """
