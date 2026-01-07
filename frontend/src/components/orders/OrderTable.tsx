@@ -2,8 +2,8 @@
 import React from 'react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { RefreshCw, Box, AlertCircle, Sparkles, Hand } from 'lucide-react';
-import { Job, FilamentReq } from '@/types/job';
+import { RefreshCw, Box, AlertCircle, Sparkles, Hand, Brush, CheckCircle2 } from 'lucide-react';
+import { Job, FilamentReq, JobStatus } from '@/types/job';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
@@ -112,9 +112,27 @@ export function OrderTable({ orders }: OrderTableProps) {
                                                     <div className={cn(
                                                         "w-1 h-3 rounded-full",
                                                         job.status === 'PENDING' ? "bg-yellow-500" :
-                                                            job.status === 'PRINTING' ? "bg-green-500 animate-pulse" :
-                                                                job.status === 'FAILED' ? "bg-red-500" : "bg-slate-500"
+                                                            job.status === 'UPLOADING' ? "bg-blue-500 animate-pulse" :
+                                                                job.status === 'PRINTING' ? "bg-green-500 animate-pulse" :
+                                                                    job.status === 'FINISHED' ? "bg-emerald-500" :
+                                                                        job.status === 'BED_CLEARING' ? "bg-amber-500 animate-pulse" :
+                                                                            job.status === 'COMPLETED' ? "bg-purple-500" :
+                                                                                job.status === 'FAILED' ? "bg-red-500" : "bg-slate-500"
                                                     )} title={`Job Status: ${job.status}`} />
+
+                                                    {/* Phase 12: Bed Clearing Indicator */}
+                                                    {job.status === 'BED_CLEARING' && (
+                                                        <span title="🧹 Clearing Bed">
+                                                            <Brush size={12} className="text-amber-500 animate-pulse" />
+                                                        </span>
+                                                    )}
+
+                                                    {/* Phase 12: Completed Indicator */}
+                                                    {job.status === 'COMPLETED' && (
+                                                        <span title="✅ Job Completed">
+                                                            <CheckCircle2 size={12} className="text-purple-500" />
+                                                        </span>
+                                                    )}
 
                                                     {/* Phase 10: Auto-Eject Indicator */}
                                                     {job.status === 'FINISHED' && (

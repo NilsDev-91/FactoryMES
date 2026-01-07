@@ -197,19 +197,27 @@ class PrintJobExecutionService:
         if is_auto_eject_active and printer.can_auto_eject:
             # Deterministic Safety: G-code contains ejections footers AND hardware is capable.
             if printer.clearing_strategy == ClearingStrategyEnum.MANUAL:
-                  logger.warning(f"Printer {printer_serial} has Eject Footers but Strategy=MANUAL. Safety Stop.")
-                  printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
+                logger.warning(f"Printer {printer_serial} has Eject Footers but Strategy=MANUAL. Safety Stop.")
+                printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
+                if job:
+                    job.status = JobStatusEnum.COMPLETED # End of life as auto-eject failed safety check
             else:
-                  logger.info(f"Verified Safe Ejection. Transitioning {printer_serial} to COOLDOWN.")
-                  printer.current_status = PrinterStatusEnum.COOLDOWN
+                logger.info(f"Verified Safe Ejection. Transitioning {printer_serial} to COOLDOWN and Job to BED_CLEARING.")
+                printer.current_status = PrinterStatusEnum.COOLDOWN
+                if job:
+                    job.status = JobStatusEnum.BED_CLEARING
         else:
             # Safety Stop: Ejection was disabled during sanitization (likely height safety) or hardware incapable.
             reason = "Hardware Incapable" if not printer.can_auto_eject else "Safety Stop: G-Code inhibited (Insufficient part height or unknown)"
             logger.warning(f"Printer {printer_serial} requires manual clearance. REASON: {reason}.")
             printer.current_status = PrinterStatusEnum.AWAITING_CLEARANCE
+            if job:
+                job.status = JobStatusEnum.COMPLETED
         
         printer.is_plate_cleared = False
         self.session.add(printer)
+        if job:
+            self.session.add(job)
         await self.session.commit()
 
     async def trigger_clearing(self, printer_serial: str) -> None:
@@ -226,10 +234,10 @@ class PrintJobExecutionService:
             self.session.add(printer)
             await self.session.commit()
 
-            # Smart Sweep: Use height from last job
+            # Smart Sweep: Use height from last job (now in BED_CLEARING state)
             last_job_stmt = (
                 select(Job)
-                .where(Job.assigned_printer_serial == printer_serial, Job.status == JobStatusEnum.FINISHED)
+                .where(Job.assigned_printer_serial == printer_serial, Job.status == JobStatusEnum.BED_CLEARING)
                 .order_by(Job.updated_at.desc())
                 .limit(1)
             )

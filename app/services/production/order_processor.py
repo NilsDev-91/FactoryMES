@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.core.config import settings
-from app.models.core import Job, Product, JobStatusEnum
+from app.models.core import Job, Product, JobStatusEnum, ProductRequirement
 from app.models.order import Order, OrderItem
 from app.models.product_sku import ProductSKU
 from app.models.print_file import PrintFile
@@ -28,6 +28,7 @@ class OrderProcessor:
         self.running = True
         logger.info("OrderProcessor loop started.")
         while self.running:
+            logger.debug("OrderProcessor heartbeat...")
             try:
                 # 1. Fetch from eBay
                 await self.sync_ebay_orders()
@@ -137,7 +138,8 @@ class OrderProcessor:
                     .where(ProductSKU.sku == item.sku)
                     .options(
                         selectinload(ProductSKU.print_file), 
-                        selectinload(ProductSKU.product).selectinload(Product.print_file)
+                        selectinload(ProductSKU.product).selectinload(Product.print_file),
+                        selectinload(ProductSKU.requirements).selectinload(ProductRequirement.filament_profile)
                     )
                 )
                 sku_record = (await session.exec(sku_stmt)).first()
@@ -147,14 +149,22 @@ class OrderProcessor:
                     file_path = None
                     if sku_record.print_file:
                         file_path = sku_record.print_file.file_path
-                    elif sku_record.product and sku_record.product.print_file_id:
-                        file_path = sku_record.product.file_path_3mf
+                    elif sku_record.product and sku_record.product.print_file:
+                        file_path = sku_record.product.print_file.file_path
                     
-                    # Resolve Req
-                    reqs = [{
-                        "material": sku_record.product.required_filament_type if sku_record.product else "PLA",
-                        "color": sku_record.hex_color or (sku_record.product.required_filament_color if sku_record.product else None)
-                    }]
+                    # Resolve Req (Priority: Requirements Table -> SKU Fields -> Product Fields)
+                    reqs = []
+                    if sku_record.requirements:
+                        for r in sku_record.requirements:
+                            reqs.append({
+                                "material": r.material,
+                                "color": r.color_hex
+                            })
+                    else:
+                        reqs = [{
+                            "material": sku_record.product.required_filament_type if sku_record.product else "PLA",
+                            "color": sku_record.hex_color or (sku_record.product.required_filament_color if sku_record.product else None)
+                        }]
                     
                     for _ in range(item.quantity):
                         job = Job(
@@ -197,7 +207,7 @@ class OrderProcessor:
                         logger.warning(f"No Product/SKU found for {item.sku}. Skipping.")
             
         await session.commit()
-        logger.info(f"Order {ebay_order.order_id} processed successfully.")
+        logger.info(f"Order {order.ebay_order_id} processed successfully.")
 
 # Singleton
 order_processor = OrderProcessor()

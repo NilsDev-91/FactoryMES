@@ -1,4 +1,13 @@
 
+export type JobStatus =
+    | 'PENDING'
+    | 'UPLOADING'
+    | 'PRINTING'
+    | 'FINISHED'
+    | 'BED_CLEARING'
+    | 'COMPLETED'
+    | 'FAILED';
+
 export interface FilamentReq {
     material: string;
     hex_color: string;
@@ -14,7 +23,7 @@ export interface JobMetadata {
 
 export interface Job {
     id: number;
-    status: string;
+    status: JobStatus;
     filament_requirements?: FilamentReq[];
     job_metadata?: JobMetadata;
 }

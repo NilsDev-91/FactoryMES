@@ -408,134 +408,15 @@ class FileProcessorService:
             logger.warning("FMS: No G28 found in G-code! Prepending Homing + Injection Sequence.")
             final_text = "G28 ; Force Home (Fallback)\n" + injection_sequence + sanitized_text
 
-        # 4. Inject Auto-Ejection Footer
+        # 4. Inject Auto-Ejection Footer via GCodeModifier (Single Source of Truth)
         is_eject_enabled = False
         if printer_type:
-             final_text, is_eject_enabled = self._inject_ejection_footer(final_text, printer_type, part_height_mm=part_height_mm)
+            gcode_modifier = GCodeModifier()
+            final_text = gcode_modifier.inject_sweep_sequence(final_text, printer_type, part_height_mm if part_height_mm else 0.0)
+            is_eject_enabled = "KINEMATICS" in final_text or "AUTONOMOUS CYCLE" in final_text
 
         return final_text.encode("utf-8"), is_eject_enabled
 
-    def _generate_a1_sweep_gcode(self, part_height_mm: float) -> List[str]:
-        """
-        Generates the A1 Safe Sweep sequence based on PART HEIGHT from DB.
-        Safe Floor: Z=2.0mm. Beam Offset: 33.0mm.
-        Validated on physical hardware (User Reference).
-        """
-        SAFE_FLOOR = 2.0
-        BEAM_OFFSET = 33.0
-        MIN_SWEEP_HEIGHT = 38.0
-
-        if part_height_mm < MIN_SWEEP_HEIGHT:
-            logger.warning(f"Part height {part_height_mm}mm < {MIN_SWEEP_HEIGHT}mm. Manual removal required.")
-            return []  # No G-code -> Printer stops -> Human intervention
-
-        # Dynamic Leverage Calculation (Hit at 60% height)
-        target_beam_z = part_height_mm * 0.6
-        ideal_nozzle_z = target_beam_z - BEAM_OFFSET
-        
-        # CLAMP to Safe Floor (Crucial Safety Step)
-        sweep_z = max(SAFE_FLOOR, ideal_nozzle_z)
-
-        return [
-            "; --- A1 SAFE SWEEP (FactoryMES) ---",
-            f"; Part Height: {part_height_mm}mm | Sweep Z: {sweep_z:.2f}mm",
-            "M84 S0       ; 1. Lock Motors (Infinite Timeout)",
-            "M140 S0      ; 2. Bed Off",
-            "M104 S0      ; 3. Nozzle Off",
-            "M190 R28     ; 4. WAIT for Cool (Passive < 28C)",
-            "G90          ; 5. Absolute Positioning",
-            "G1 Z100 F3000; 6. Safety Lift",
-            "G1 X0 Y0     ; 7. Park (Nozzle Left, Bed Front)",
-            f"G1 Z{sweep_z:.2f}  ; 8. Move to Sweep Height",
-            "G1 Y256 F1500; 9. EXECUTE SWEEP (Push Part)",
-            "G1 Z50 F3000 ; 10. Lift",
-            "G28          ; 11. Re-Home (Safe now)",
-            "M84 S120     ; 12. Restore Idle Timeout",
-            "; --- END SWEEP ---"
-        ]
-
-    def _generate_a1_toolhead_push_gcode(self, part_height_mm: float) -> List[str]:
-        """
-        Generates A1 Toolhead Push (Nozzle Ram) sequence for SMALL parts (<38mm).
-        Uses the toolhead itself to gently push the part off the bed.
-        Safety: Z >= 10mm to prevent nozzle crash.
-        """
-        SAFE_Z = 10.0  # Minimum Z height for toolhead push
-        PUSH_Z = max(SAFE_Z, part_height_mm + 2.0)  # Stay above part
-
-        return [
-            "; --- A1 TOOLHEAD PUSH (FactoryMES) ---",
-            f"; Part Height: {part_height_mm}mm | Push Z: {PUSH_Z:.2f}mm",
-            "M84 S0       ; 1. Lock Motors",
-            "M140 S0      ; 2. Bed Off",
-            "M104 S0      ; 3. Nozzle Off",
-            "M190 R28     ; 4. WAIT for Cool (Passive < 28C)",
-            "G90          ; 5. Absolute Positioning",
-            "G1 Z50 F3000 ; 6. Safety Lift",
-            "G1 X128 Y10 F12000 ; 7. Move to Center-Back",
-            f"G1 Z{PUSH_Z:.2f} F3000 ; 8. Lower to Push Height",
-            "G1 Y256 F2000; 9. PUSH FORWARD (Eject Part)",
-            "G1 Z50 F3000 ; 10. Lift",
-            "G28          ; 11. Re-Home",
-            "M84 S120     ; 12. Restore Idle Timeout",
-            "; --- END TOOLHEAD PUSH ---"
-        ]
-
-    def _inject_ejection_footer(self, gcode_text: str, printer_type: str, part_height_mm: Optional[float] = None) -> Tuple[str, bool]:
-        """
-        Appends hardware-specific ejection sequence to the G-code.
-        
-        For A1 printers:
-        - Gantry Sweep (X-Axis Ram): Parts >= 38mm
-        - Toolhead Push (Nozzle Ram): Parts < 38mm
-        """
-        p_type = printer_type.upper()
-        footer = ""
-        is_enabled = False
-
-        if "A1" in p_type:
-            MIN_SWEEP_HEIGHT = 38.0
-            
-            if part_height_mm is not None:
-                if part_height_mm >= MIN_SWEEP_HEIGHT:
-                    # GANTRY SWEEP: X-Axis Ram for tall parts
-                    sweep_lines = self._generate_a1_sweep_gcode(part_height_mm)
-                    if sweep_lines:
-                        logger.info(f"FMS: Selected A1 Gantry Sweep (Height {part_height_mm:.1f}mm >= {MIN_SWEEP_HEIGHT}mm)")
-                        return gcode_text + "\n".join(sweep_lines), True
-                else:
-                    # TOOLHEAD PUSH: Nozzle Ram for small parts
-                    push_lines = self._generate_a1_toolhead_push_gcode(part_height_mm)
-                    logger.info(f"FMS: Selected A1 Toolhead Push (Height {part_height_mm:.1f}mm < {MIN_SWEEP_HEIGHT}mm)")
-                    return gcode_text + "\n".join(push_lines), True
-            else:
-                # Unknown height: Default to Gantry Sweep at safe Z (conservative)
-                logger.warning("FMS: Part height unknown, defaulting to A1 Gantry Sweep at Z=50mm")
-                sweep_lines = self._generate_a1_sweep_gcode(50.0)
-                return gcode_text + "\n".join(sweep_lines), True
-                
-        elif any(x in p_type for x in ["X1", "P1"]):
-             # X1C / P1P / P1S: Mechanical Sweep
-             footer = (
-                "\n; --- FACTORYOS AUTO-EJECTION (X1/P1 Sweep) ---\n"
-                "M140 S0 ; Bed off\n"
-                "M106 S255 ; Max fan\n"
-                "M109 R28 ; Wait for safe temp\n"
-                "G91 ; Relative mode\n"
-                "G1 Z10 F600 ; Safety Z-hop\n"
-                "G90 ; Absolute mode\n"
-                "; Concept Sweep Motion\n"
-                "G1 X10 Y10 F12000\n"
-                "G1 X240 F12000\n"
-                "; ------------------------------------------\n"
-             )
-             is_enabled = True
-        
-        if footer:
-            logger.info(f"FMS: Injected {p_type} ejection footer.")
-            return gcode_text + footer, is_enabled
-        
-        return gcode_text, False
 
     def _calculate_md5(self, content: bytes) -> str:
         return hashlib.md5(content).hexdigest()

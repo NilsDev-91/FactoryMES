@@ -1,126 +1,127 @@
 import asyncio
-import time
 import logging
+from datetime import datetime, timezone
 import sys
 import os
 
-# Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlmodel import select, delete
+from sqlmodel import select, delete, Session
 from sqlalchemy.orm import selectinload
+from rich.console import Console
+from rich.table import Table
+from rich.live import Live
+
 from app.core.database import async_session_maker
+from app.models.core import Job, JobStatusEnum
 from app.models.order import Order, OrderItem
-from app.models.core import Job, Printer, PrinterStatusEnum, JobStatusEnum
-from app.models.product_sku import ProductSKU
 
-# RICH formatting if available, otherwise fallback
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.status import Status
-    console = Console()
-except ImportError:
-    class MockConsole:
-        def print(self, msg, **kwargs): print(msg)
-        def log(self, msg, **kwargs): print(msg)
-        def status(self, msg): return self
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-    console = MockConsole()
+console = Console()
 
-async def simulate_ebay_events():
-    """
-    STRICT EXTERNAL SOURCE SIMULATOR
-    Acts as the eBay API pushing events into the DB.
-    Ensures OrderProcessor handles the conversion to Jobs.
-    """
-    console.print(Panel.fit("[bold blue]eBay Order Simulation 2.0[/bold blue]\n[italic]Testing Automated Order-to-Job conversion...[/italic]"))
-    
-    order_id = "Test-Order-Auto-111"
-    sku_val = "KEGEL-V3-BLACK"
-    
+async def cleanup_orders():
+    """Wipe the slate clean for a fresh logic test."""
     async with async_session_maker() as session:
-        # STEP 1: PURGE (for clean test)
-        console.log("🧹 [CLEANUP] Purging existing Orders and Jobs...")
+        print("🧹 Cleaning up old Orders and Jobs...")
         await session.exec(delete(Job))
         await session.exec(delete(OrderItem))
         await session.exec(delete(Order))
-        
-        # STEP 1.1: Reset Printer - SKIPPED BY USER REQUEST
-        console.log("ℹ️ [RESET] Printer state reset disabled.")
+        await session.commit()
 
-        # STEP 2: INJECT ORDER (External Event Simulation)
-        console.log(f"📥 [INJECT] Creating Order '{order_id}'...")
+async def inject_order(ebay_id: str, sku: str):
+    """Simulate an external eBay webhook injecting a raw order into the DB."""
+    async with async_session_maker() as session:
+        print(f"📦 [External] New Order received: {ebay_id} ({sku}). Waiting for FactoryOS Brain...")
         
+        # 1. Create Order
         db_order = Order(
-            ebay_order_id=order_id,
-            buyer_username="EBAY_SIMULATOR",
-            total_price=24.99,
-            currency="EUR",
-            status="PENDING"
+            ebay_order_id=ebay_id,
+            buyer_username="SimulatedBuyer",
+            total_price=29.99,
+            currency="USD",
+            status="PENDING",
+            created_at=datetime.now(timezone.utc)
         )
         session.add(db_order)
         await session.flush()
         
+        # 2. Create OrderItem (The trigger for the Brain)
         db_item = OrderItem(
             order_id=db_order.id,
-            sku=sku_val,
-            title="Zylinder V2 (Simulated)",
+            sku=sku,
+            title=f"Sample {sku}",
             quantity=1
         )
         session.add(db_item)
         await session.commit()
+
+def generate_job_table(jobs: list) -> Table:
+    table = Table(title="FactoryOS Brain - Passive Monitoring")
+    table.add_column("Order ID", justify="left", style="cyan")
+    table.add_column("Job ID", justify="center", style="magenta")
+    table.add_column("SKU", justify="left", style="green")
+    table.add_column("Status", justify="left")
+    table.add_column("Printer", justify="left", style="yellow")
+    table.add_column("Requirements", justify="left", style="blue")
+
+    for job in jobs:
+        order_id = job.order.ebay_order_id if job.order else "N/A"
+        sku = job.order.items[0].sku if job.order and job.order.items else "N/A"
+        reqs = str(job.filament_requirements)
         
-        console.print(f"[EVENT] 📦 Simulated eBay Order '{order_id}' injected.")
-        console.print(f"      (SKU: {sku_val} | Source: INJECTED_ORPHAN)")
-        console.print(f"      [italic]The OrderProcessor service will now pick this up and create Jobs.[/italic]\n")
+        status_color = "white"
+        if job.status == JobStatusEnum.PENDING: status_color = "yellow"
+        elif job.status == JobStatusEnum.PRINTING: status_color = "green"
+        elif job.status == JobStatusEnum.FAILED: status_color = "red"
+        
+        table.add_row(
+            order_id,
+            str(job.id),
+            sku,
+            f"[{status_color}]{job.status}[/{status_color}]",
+            job.assigned_printer_serial or "WAITTING...",
+            reqs
+        )
+    return table
 
-    # STEP 3: MONITORING
-    console.print("[bold yellow]🔍 PASSIVE MONITORING STARTED[/bold yellow]")
-    
-    jobs_detected = False
-    printer_assigned = False
-    
-    while True:
-        await asyncio.sleep(2)
-        async with async_session_maker() as session:
-            # Refresh Jobs
-            job_stmt = select(Job).options(selectinload(Job.order)).where(Job.order_id == db_order.id)
-            jobs = (await session.exec(job_stmt)).all()
-            
-            if jobs and not jobs_detected:
-                jobs_detected = True
-                console.print(f"[PROCESSOR] ✅ OrderProcessor created {len(jobs)} Job(s)!")
-            
-            for job in jobs:
-                if job.assigned_printer_serial and not printer_assigned:
-                    printer_assigned = True
-                    console.print(f"[DISPATCH] 🖨️ Assigned to Printer: [bold cyan]{job.assigned_printer_serial}[/bold cyan]")
-                    # Observe metadata inheritance (Verify the "Brain" worked)
-                    height = job.job_metadata.get("part_height_mm")
-                    console.print(f"[METADATA] 🧩 Verification: Job inherited Height={height}mm")
+async def monitor_jobs():
+    """Passive monitoring loop to watch the Brain's decisions."""
+    with Live(auto_refresh=False) as live:
+        while True:
+            async with async_session_maker() as session:
+                stmt = select(Job).options(
+                    selectinload(Job.order).selectinload(Order.items)
+                )
+                jobs = (await session.exec(stmt)).all()
+                live.update(generate_job_table(jobs), refresh=True)
+            await asyncio.sleep(2)
 
-                if job.status == JobStatusEnum.PRINTING:
-                    console.print(f"\n🚀 [bold green]PRINTER STARTED![/bold green] Job {job.id} is now PRINTING.")
-                    return
-                
-                if job.status == JobStatusEnum.FAILED:
-                    console.print(f"\n❌ [bold red]JOB FAILED:[/bold red] {job.error_message}")
-                    return
-            
-            if not jobs_detected:
-                 console.log(f"Waiting for OrderProcessor... (Order: {order_id})")
-            else:
-                 status_str = jobs[0].status.value if jobs else "N/A"
-                 assigned_str = jobs[0].assigned_printer_serial or "None"
-                 console.log(f"Job Status: [bold]{status_str}[/bold] | Assigned: {assigned_str}")
+async def main():
+    console.print("[bold cyan]FACTORY-OS AUTONOMOUS LOGIC TEST[/bold cyan]")
+    
+    # 1. Cleanup
+    await cleanup_orders()
+    
+    # Start Monitoring in background
+    monitor_task = asyncio.create_task(monitor_jobs())
+    
+    # 2. Injection 1
+    await inject_order("AUTO-TEST-1", "KEGEL-V3-BLACK")
+    
+    # 3. Wait 10s
+    console.print("[dim]Waiting 10s for Injection 2...[/dim]")
+    await asyncio.sleep(10)
+    
+    # 4. Injection 2
+    await inject_order("AUTO-TEST-2", "ZYLINDER-V2-RED")
+    
+    # Let it run indefinitely or until manually stopped
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
 
 if __name__ == "__main__":
-    if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
     try:
-        asyncio.run(simulate_ebay_events())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n👋 Monitoring stopped by user.")
+        print("\n\n👋 Simulation stopped by user.")
