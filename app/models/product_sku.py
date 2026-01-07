@@ -55,7 +55,7 @@ class ProductSKU(SQLModel, table=True):
             "cascade": "all, delete-orphan"
         }
     )
-    requirements: List["ProductRequirement"] = Relationship(
-        back_populates="product_sku",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
-    )
+    # requirements: List["ProductRequirement"] = Relationship(
+    #     back_populates="product_sku",
+    #     sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    # )

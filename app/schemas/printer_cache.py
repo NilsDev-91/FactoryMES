@@ -1,7 +1,7 @@
 import time
 from typing import Optional, Dict, List, Any
 from pydantic import BaseModel, Field
-from app.models.core import PrinterStatusEnum
+from app.models.printer import PrinterState
 
 class AMSSlotCache(BaseModel):
     """Lightweight AMS state for cache."""
@@ -15,7 +15,7 @@ class PrinterStateCache(BaseModel):
     Serialized from MQTT telemetry with strict Pydantic v2 validation.
     """
     serial: str
-    status: PrinterStatusEnum
+    status: PrinterState
     temps: Dict[str, float] = Field(description="e.g., {'nozzle': 220.0, 'bed': 60.0}")
     progress: int = Field(ge=0, le=100)
     remaining_time_min: int

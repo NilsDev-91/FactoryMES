@@ -5,10 +5,10 @@ from typing import Optional
 import logging
 
 from app.core.database import get_session
-from app.models.core import Printer, PrinterStatusEnum
-from app.models.printer import PrinterRead
-from app.services.print_job_executor import PrintJobExecutionService
-from app.services.filament_manager import FilamentManager
+from app.models.printer import Printer, PrinterState
+from app.models import PrinterRead
+from app.services.job_executor import JobExecutionService
+from app.services.filament_service import FilamentService
 from app.services.printer.commander import PrinterCommander
 
 router = APIRouter(prefix="/printers", tags=["Printer Control"])
@@ -26,10 +26,9 @@ async def confirm_clearance(
     Triggers instant job handoff (Reactive Loop).
     """
     # 1. Setup Services
-    # Ideally these would be injected dependencies, but keeping consistent with existing pattern
-    filament_manager = FilamentManager()
+    filament_service = FilamentService(session)
     commander = PrinterCommander()
-    executor = PrintJobExecutionService(session, filament_manager, commander)
+    executor = JobExecutionService(session)
     
     try:
         updated_printer = await executor.handle_manual_clearance(printer_id)
@@ -100,22 +99,22 @@ async def force_clear_printer(printer_id: str, session: AsyncSession = Depends(g
     
     Allowed states: IDLE, COOLDOWN, AWAITING_CLEARANCE
     """
-    statement = select(Printer).where(Printer.serial == printer_id).options(selectinload(Printer.ams_slots))
+    statement = select(Printer).where(Printer.serial == printer_id)
     printer = (await session.exec(statement)).first()
     
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
     
     allowed_states = [
-        PrinterStatusEnum.IDLE,
-        PrinterStatusEnum.COOLDOWN,
-        PrinterStatusEnum.AWAITING_CLEARANCE
+        PrinterState.IDLE,
+        PrinterState.COOLDOWN,
+        PrinterState.AWAITING_CLEARANCE
     ]
     
-    if printer.current_status not in allowed_states:
+    if printer.current_state not in allowed_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Force clear not allowed in state {printer.current_status}. Allowed: IDLE, COOLDOWN, AWAITING_CLEARANCE"
+            detail=f"Force clear not allowed in state {printer.current_state}. Allowed: IDLE, COOLDOWN, AWAITING_CLEARANCE"
         )
     
     # Simplified implementation: Just update status without MQTT commands
@@ -124,7 +123,7 @@ async def force_clear_printer(printer_id: str, session: AsyncSession = Depends(g
     logger.info(f"Force-clear triggered for {printer_id}, updating status to CLEARING_BED")
     
     try:
-        printer.current_status = PrinterStatusEnum.CLEARING_BED
+        printer.current_state = PrinterState.CLEARING_BED
         session.add(printer)
         await session.commit()
         await session.refresh(printer)
@@ -149,7 +148,7 @@ async def update_automation_config(
     - thermal_release_temp: Temperature threshold for bed release (°C)
     - clearing_strategy: MANUAL, A1_GANTRY_SWEEP, A1_TOOLHEAD_PUSH, or X1_MECHANICAL_SWEEP
     """
-    statement = select(Printer).where(Printer.serial == printer_id).options(selectinload(Printer.ams_slots))
+    statement = select(Printer).where(Printer.serial == printer_id)
     printer = (await session.exec(statement)).first()
     
     if not printer:

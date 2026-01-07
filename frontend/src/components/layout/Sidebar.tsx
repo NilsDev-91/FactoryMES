@@ -8,6 +8,7 @@ import {
     ShoppingCart,
     Package,
     Settings,
+    Workflow,
 } from 'lucide-react';
 import { BambuPrinterIcon } from '@/components/icons/BambuPrinterIcon';
 
@@ -17,6 +18,7 @@ export function Sidebar() {
     const navItems = [
         { label: 'Dashboard', href: '/', icon: LayoutDashboard },
         { label: 'Fleet', href: '/printers', icon: BambuPrinterIcon },
+        { label: 'Print Jobs', href: '/jobs', icon: Workflow },
         { label: 'Products', href: '/products', icon: Package },
         { label: 'Live Order Feed', href: '/orders', icon: ShoppingCart },
         { label: 'Printing Operations', href: '/operations', icon: BambuPrinterIcon },

@@ -1,33 +1,14 @@
-
-export type JobStatus =
-    | 'PENDING'
-    | 'UPLOADING'
-    | 'PRINTING'
-    | 'FINISHED'
-    | 'BED_CLEARING'
-    | 'COMPLETED'
-    | 'FAILED';
-
-export interface FilamentReq {
-    material: string;
-    hex_color: string;
-    virtual_id: number;
-}
-
-export interface JobMetadata {
-    is_auto_eject_enabled?: boolean;
-    detected_height?: number;
-    model_height_mm?: number;
-    part_height_mm?: number;
-}
+export type JobStatus = 'PENDING' | 'PRINTING' | 'SUCCESS' | 'NEEDS_CLEARING' | 'FAILED';
 
 export interface Job {
     id: number;
+    file_path: string;
+    printer_id: string | null;
     status: JobStatus;
-    filament_requirements?: FilamentReq[];
-    job_metadata?: JobMetadata;
-}
-
-export interface JobHistory extends Job {
-    completed_at?: string;
+    required_material: string;
+    required_color_hex: string | null;
+    used_ams_slot: number | null;
+    started_at: string | null;
+    finished_at: string | null;
+    created_at: string;
 }

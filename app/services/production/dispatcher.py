@@ -6,7 +6,8 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import async_session_maker
-from app.models.core import Job, Printer, Product, JobStatusEnum, PrinterStatusEnum
+from app.models import PrintJob as Job, Product, JobStatusEnum
+from app.models.printer import Printer, PrinterState
 from app.models.order import Order, OrderStatusEnum
 from app.models.product_sku import ProductSKU
 from app.models.print_file import PrintFile
@@ -56,7 +57,7 @@ class ProductionDispatcher:
                 return
 
             printer = await session.get(Printer, printer_serial)
-            if not printer or printer.current_status != PrinterStatusEnum.IDLE:
+            if not printer or printer.current_state != PrinterState.IDLE:
                  logger.warning(f"Printer {printer_serial} no longer IDLE. Aborting assignment.")
                  return
 
@@ -64,7 +65,7 @@ class ProductionDispatcher:
             job.assigned_printer_serial = printer_serial
             job.status = JobStatusEnum.UPLOADING
             
-            printer.current_status = PrinterStatusEnum.PRINTING
+            printer.current_state = PrinterState.PRINTING
             
             if job.order_id:
                 order = await session.get(Order, job.order_id)
@@ -102,7 +103,7 @@ class ProductionDispatcher:
                 await session.refresh(job)
                 await session.refresh(printer)
                 
-                printer.current_status = PrinterStatusEnum.IDLE
+                printer.current_state = PrinterState.IDLE
                 job.status = JobStatusEnum.FAILED
                 job.error_message = f"{type(exec_err).__name__}: {str(exec_err)}"
                 job.assigned_printer_serial = None 

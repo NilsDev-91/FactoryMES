@@ -27,7 +27,7 @@ class Order(SQLModel, table=True):
     )
     
     items: List["OrderItem"] = Relationship(back_populates="order", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
-    jobs: List["Job"] = Relationship(back_populates="order")
+    # jobs: List["Job"] = Relationship(back_populates="order")
 
 class OrderItem(SQLModel, table=True):
     __tablename__ = "order_items"
@@ -58,14 +58,4 @@ class OrderRead(SQLModel):
     status: str
     created_at: datetime
     items: List[OrderItemRead] = []
-    jobs: List["JobRead"] = []
-
-class JobRead(SQLModel):
-    id: int
-    status: str
-    filament_requirements: Optional[Any] = None
-    gcode_path: str
-    assigned_printer_serial: Optional[str] = None
-    job_metadata: Optional[dict] = {}
-
-# Relationship to Job is handled via string reference
+    # jobs: List["JobRead"] = [] # Temporarily commented out to avoid circularity issues if not handled

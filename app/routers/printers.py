@@ -4,8 +4,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from typing import List
 
 from app.core.database import get_session
-from app.models.core import Printer
-from app.models.printer import PrinterRead
+from app.models.printer import Printer, PrinterState, PrinterRead, PrinterCreate
 from sqlalchemy.orm import selectinload
 import os
 
@@ -68,13 +67,12 @@ async def get_printer_stream(serial: str, session: AsyncSession = Depends(get_se
             
     return printers
 
-from app.models.printer import PrinterCreate
-from app.models.core import PrinterStatusEnum
+# Removed PrinterCreate and PrinterStatusEnum imports from here
 
 @router.post("", response_model=PrinterRead)
 async def create_printer(printer: PrinterCreate, session: AsyncSession = Depends(get_session)):
-    # Check if exists (with eager loading for relationships to avoid MissingGreenlet)
-    statement = select(Printer).where(Printer.serial == printer.serial).options(selectinload(Printer.ams_slots))
+    # Check if exists
+    statement = select(Printer).where(Printer.serial == printer.serial)
     existing_printer = (await session.exec(statement)).first()
 
     if existing_printer:
@@ -95,24 +93,18 @@ async def create_printer(printer: PrinterCreate, session: AsyncSession = Depends
             name=printer.name,
             ip_address=printer.ip_address,
             access_code=printer.access_code,
-            type=printer.type,
-            current_status=PrinterStatusEnum.IDLE,
-            current_temp_nozzle=0,
-            current_temp_bed=0,
-            current_progress=0
+            model=printer.model if hasattr(printer, 'model') else "A1", # Safety fallback
+            current_state=PrinterState.IDLE
         )
         session.add(new_printer)
         await session.commit()
         await session.refresh(new_printer)
-        # Explicitly set ams_slots to empty list to avoid lazy load error on return
-        new_printer.ams_slots = [] 
         return new_printer
 
 @router.delete("/{serial}")
 async def delete_printer(serial: str, session: AsyncSession = Depends(get_session)):
-    # Verify printer exists and load relationships to prevent MissingGreenlet/Cascade issues
+    # Verify printer exists
     statement = select(Printer).where(Printer.serial == serial).options(
-        selectinload(Printer.ams_slots),
         selectinload(Printer.jobs)
     )
     printer = (await session.exec(statement)).first()
@@ -120,13 +112,9 @@ async def delete_printer(serial: str, session: AsyncSession = Depends(get_sessio
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
     
-    # Manually delete jobs if cascade isn't set up in DB (Safety)
+    # Jobs are deleted via cascade if set up, or manually if needed
     for job in printer.jobs:
         await session.delete(job)
-
-    # Manually delete AMS slots if cascade isn't set up
-    for slot in printer.ams_slots:
-        await session.delete(slot)
         
     await session.delete(printer)
     await session.commit()
@@ -183,14 +171,14 @@ async def confirm_clearance(serial: str, session: AsyncSession = Depends(get_ses
         raise HTTPException(status_code=404, detail="Printer not found")
     
     # Verify the printer is actually waiting for clearance
-    if printer.current_status != PrinterStatusEnum.AWAITING_CLEARANCE:
+    if printer.current_state != PrinterState.AWAITING_CLEARANCE:
         raise HTTPException(
             status_code=409, 
-            detail=f"Printer is not awaiting clearance. Current status: {printer.current_status.value}"
+            detail=f"Printer is not awaiting clearance. Current status: {printer.current_state.value}"
         )
     
     # Transition to IDLE
-    printer.current_status = PrinterStatusEnum.IDLE
+    printer.current_state = PrinterState.IDLE
     printer.is_plate_cleared = True
     
     session.add(printer)
@@ -199,7 +187,7 @@ async def confirm_clearance(serial: str, session: AsyncSession = Depends(get_ses
     
     return {
         "message": f"Clearance confirmed. Printer {serial} is now IDLE.",
-        "status": printer.current_status.value,
+        "status": printer.current_state.value,
         "is_plate_cleared": printer.is_plate_cleared
     }
 
@@ -222,17 +210,17 @@ async def clear_error(serial: str, session: AsyncSession = Depends(get_session))
     ## Operator Responsibility:
     The operator MUST physically verify the error condition is resolved before calling this endpoint.
     """
-    statement = select(Printer).where(Printer.serial == serial).options(selectinload(Printer.ams_slots))
+    statement = select(Printer).where(Printer.serial == serial)
     printer = (await session.exec(statement)).first()
     
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
     
     # Verify the printer is in error state
-    if printer.current_status not in [PrinterStatusEnum.ERROR, PrinterStatusEnum.PAUSED]:
+    if printer.current_state not in [PrinterState.ERROR, PrinterState.PAUSED]:
         raise HTTPException(
             status_code=409, 
-            detail=f"Printer is not in error state. Current status: {printer.current_status.value}"
+            detail=f"Printer is not in error state. Current status: {printer.current_state.value}"
         )
     
     # Log the error being cleared
@@ -244,7 +232,7 @@ async def clear_error(serial: str, session: AsyncSession = Depends(get_session))
     printer.last_error_description = None
     
     # Transition to IDLE
-    printer.current_status = PrinterStatusEnum.IDLE
+    printer.current_state = PrinterState.IDLE
     
     session.add(printer)
     await session.commit()
@@ -253,14 +241,14 @@ async def clear_error(serial: str, session: AsyncSession = Depends(get_session))
     return {
         "message": f"Error cleared on {serial}. Printer is now IDLE.",
         "cleared_error": cleared_error,
-        "status": printer.current_status.value
+        "status": printer.current_state.value
     }
 
 
 from app.schemas.tool_definitions import PrinterActionRequest, PrinterActionEnum
 from app.core.exceptions import PrinterBusyError, ResourceNotFoundError
-from app.services.print_job_executor import PrintJobExecutionService
-from app.services.filament_manager import FilamentManager
+from app.services.job_executor import JobExecutionService
+from app.services.filament_service import FilamentService
 from app.services.printer.commander import PrinterCommander
 
 @router.post("/{serial}/command", response_model=dict)
@@ -294,8 +282,8 @@ async def send_command(
     # Check Busy State for invasive commands
     if command.action in [PrinterActionEnum.CLEAR_BED] and not command.force:
         # Strict lock: fail if busy
-        if printer.current_status in [PrinterStatusEnum.PRINTING, PrinterStatusEnum.CLEARING_BED, PrinterStatusEnum.COOLDOWN]:
-            raise PrinterBusyError(serial, printer.current_status)
+        if printer.current_state in [PrinterState.PRINTING, PrinterState.CLEARING_BED, PrinterState.COOLDOWN]:
+            raise PrinterBusyError(serial, printer.current_state)
 
     # Dispatch Command via Executor/Commander
     # Ideally we use an injected service. For now, instantiate standard services.
@@ -303,8 +291,7 @@ async def send_command(
     
     if command.action == PrinterActionEnum.CLEAR_BED:
          # Use the centralized Executor logic
-         fms = FilamentManager()
-         executor = PrintJobExecutionService(session, fms, commander)
+         executor = JobExecutionService(session)
          await executor.trigger_clearing(printer.serial)
          return {"message": f"Clearing sequence initiated for {serial}"}
          
@@ -319,8 +306,7 @@ async def send_command(
         pass
     elif command.action == "CONFIRM_CLEARANCE":
         # Reactive Loop: Instant handoff
-        fms = FilamentManager()
-        executor = PrintJobExecutionService(session, fms, commander)
+        executor = JobExecutionService(session)
         await executor.handle_manual_clearance(serial)
         return {"message": f"Manual clearance confirmed for {serial}. Instant handoff triggered."}
 

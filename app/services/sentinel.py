@@ -8,7 +8,7 @@ from aiomqtt import Client, MqttError
 import paho.mqtt.client as mqtt_base
 
 from app.core.database import async_session_maker
-from app.models.core import Printer, PrinterStatusEnum
+from app.models.printer import Printer, PrinterState
 from app.schemas.printer_cache import PrinterStateCache, AMSSlotCache
 from app.core.redis import get_redis_client
 from sqlalchemy import select
@@ -19,28 +19,28 @@ logger = logging.getLogger("PrinterSentinel")
 # 1: Printing, 2: Bed Leveling, 3: Heating, 4: XY Mech, 5: Filament Change, 
 # 7: Paused, 8: Finished, 9: Busy, 10: Cleaning Nozzle, 11: Preparing, 12: Homing
 STAGE_TO_STATUS = {
-    1: PrinterStatusEnum.PRINTING,
-    2: PrinterStatusEnum.PRINTING,
-    3: PrinterStatusEnum.PRINTING,
-    4: PrinterStatusEnum.PRINTING,
-    5: PrinterStatusEnum.PRINTING,
-    6: PrinterStatusEnum.PRINTING,
-    7: PrinterStatusEnum.PAUSED,
-    8: PrinterStatusEnum.AWAITING_CLEARANCE,
-    9: PrinterStatusEnum.PRINTING,
-    10: PrinterStatusEnum.PRINTING,
-    11: PrinterStatusEnum.PRINTING,
-    12: PrinterStatusEnum.PRINTING,
-    13: PrinterStatusEnum.PRINTING,
-    14: PrinterStatusEnum.PRINTING,
+    1: PrinterState.PRINTING,
+    2: PrinterState.PRINTING,
+    3: PrinterState.PRINTING,
+    4: PrinterState.PRINTING,
+    5: PrinterState.PRINTING,
+    6: PrinterState.PRINTING,
+    7: PrinterState.PAUSED,
+    8: PrinterState.AWAITING_CLEARANCE,
+    9: PrinterState.PRINTING,
+    10: PrinterState.PRINTING,
+    11: PrinterState.PRINTING,
+    12: PrinterState.PRINTING,
+    13: PrinterState.PRINTING,
+    14: PrinterState.PRINTING,
 }
 
 GCODE_STATE_TO_STATUS = {
-    "IDLE": PrinterStatusEnum.IDLE,
-    "RUNNING": PrinterStatusEnum.PRINTING,
-    "FINISH": PrinterStatusEnum.AWAITING_CLEARANCE,
-    "PAUSE": PrinterStatusEnum.PAUSED,
-    "OFFLINE": PrinterStatusEnum.OFFLINE,
+    "IDLE": PrinterState.IDLE,
+    "RUNNING": PrinterState.PRINTING,
+    "FINISH": PrinterState.AWAITING_CLEARANCE,
+    "PAUSE": PrinterState.PAUSED,
+    "OFFLINE": PrinterState.OFFLINE,
 }
 
 class BambuMQTTClient:
@@ -109,7 +109,7 @@ class BambuMQTTClient:
         mc_print_stage = print_data.get("mc_print_stage")
         gcode_state = print_data.get("gcode_state")
         
-        status = PrinterStatusEnum.IDLE
+        status = PrinterState.IDLE
         if mc_print_stage in STAGE_TO_STATUS:
             status = STAGE_TO_STATUS[mc_print_stage]
         elif gcode_state in GCODE_STATE_TO_STATUS:

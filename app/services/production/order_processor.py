@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.core.config import settings
-from app.models.core import Job, Product, JobStatusEnum, ProductRequirement
+from app.models import PrintJob as Job, Product, JobStatusEnum, ProductRequirement
 from app.models.order import Order, OrderItem
 from app.models.product_sku import ProductSKU
 from app.models.print_file import PrintFile

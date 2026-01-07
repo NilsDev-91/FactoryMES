@@ -6,9 +6,11 @@ from sqlmodel import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.core import Printer, Job, PrinterStatusEnum, JobStatusEnum, PrinterTypeEnum
+from app.models import PrintJob as Job, JobStatus as JobStatusEnum, ClearingStrategyEnum
+from app.models.printer import Printer, PrinterState, PrinterTypeEnum
 from app.services.logic.color_matcher import color_matcher
 from app.services.printer.commander import PrinterCommander
+from app.services.filament_service import FilamentService
 
 logger = logging.getLogger("JobDispatcher")
 
@@ -44,9 +46,8 @@ class JobDispatcher:
             # 1. Fetch Idle & Ready Printers
             printer_stmt = (
                 select(Printer)
-                .where(Printer.current_status == PrinterStatusEnum.IDLE)
+                .where(Printer.current_state == PrinterState.IDLE)
                 .where(Printer.is_plate_cleared == True)
-                .options(selectinload(Printer.ams_slots))
             )
             
             if target_printer_serial:
@@ -88,15 +89,22 @@ class JobDispatcher:
                         continue
 
                     # Filament Match
-                    match_result = self._find_matching_ams_slot(printer, job)
-                    if match_result:
-                        slot_id, ams_mapping = match_result
-                        logger.info(f"MATCH FOUND: Job {job.id} -> Printer {printer.serial} (Slot ID {slot_id})")
+                    filament_service = FilamentService(session)
+                    best_slot = await filament_service.find_best_match_for_job(printer, job)
+                    
+                    if best_slot is not None:
+                        # best_slot is 0-3 for AMS or 254 for external
+                        logger.info(f"MATCH FOUND: Job {job.id} -> Printer {printer.serial} (Slot {best_slot})")
+                        
+                        # Bambu mapping: index is target, value is source (slot_id + 1)
+                        # For simple single-filament jobs, we map everything to the best slot
+                        source_id = best_slot + 1 if best_slot < 200 else 255 # 255 is external
+                        ams_mapping = [source_id] * 16
                         
                         # Atomic state transition
                         job.status = JobStatusEnum.UPLOADING
                         job.assigned_printer_serial = printer.serial
-                        printer.current_status = PrinterStatusEnum.PRINTING
+                        printer.current_state = PrinterState.PRINTING
                         printer.is_plate_cleared = False
                         printer.current_job_id = job.id
                         
@@ -124,24 +132,7 @@ class JobDispatcher:
                 for job_id, printer_serial, ams_mapping in launch_queue:
                     asyncio.create_task(self._assign_and_launch(job_id, printer_serial, ams_mapping))
 
-    def _find_matching_ams_slot(self, printer: Printer, job: Job) -> Optional[Tuple[int, List[int]]]:
-        try:
-            req = job.filament_requirements[0]
-            req_material = req.get("material")
-            req_color = req.get("hex_color") or req.get("color")
-        except (IndexError, KeyError):
-            return None
 
-        for slot in printer.ams_slots:
-            if not slot.material or slot.material.upper() != req_material.upper():
-                continue
-            
-            if color_matcher.is_color_match(req_color, slot.color_hex):
-                # Map to all 16 slots just to be safe (Bambu broadcast)
-                ams_mapping = [slot.slot_id + 1] * 16
-                return slot.slot_id, ams_mapping
-                
-        return None
 
     async def _assign_and_launch(self, job_id: int, printer_serial: str, ams_mapping: List[int]):
         """
@@ -190,7 +181,7 @@ class JobDispatcher:
                 job.error_message = str(e)
                 job.assigned_printer_serial = None
                 
-                printer.current_status = PrinterStatusEnum.IDLE
+                printer.current_state = PrinterState.IDLE
                 printer.is_plate_cleared = True 
                 printer.current_job_id = None
                 
@@ -225,7 +216,7 @@ class JobDispatcher:
             if job.assigned_printer_serial:
                 printer = await session.get(Printer, job.assigned_printer_serial)
                 if printer:
-                    printer.current_status = PrinterStatusEnum.IDLE
+                    printer.current_state = PrinterState.IDLE
                     printer.is_plate_cleared = True
                     printer.current_job_id = None
                     session.add(printer)

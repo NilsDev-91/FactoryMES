@@ -2,7 +2,7 @@ import httpx
 import logging
 import urllib.parse
 import os
-from app.models.core import Printer
+from app.models import Printer
 
 logger = logging.getLogger("StreamService")
 
